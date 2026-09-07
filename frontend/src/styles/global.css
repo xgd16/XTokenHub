@@ -1,0 +1,263 @@
+/* ============ XTokenHub · 终端级观测台主题 ============ */
+/* 默认深色；:root[data-theme='light'] 覆盖为浅色，组件一律引用变量 */
+:root {
+  color-scheme: dark;
+  --bg-void: #070b10;
+  --bg-base: #0b1017;
+  --bg-panel: #10161f;
+  --bg-elevated: #141c27;
+  --border-faint: rgba(94, 128, 148, 0.16);
+  --border-strong: rgba(94, 148, 132, 0.35);
+  --text-primary: #e6edf3;
+  --text-secondary: #8b98a9;
+  --text-faint: #5a6675;
+  --accent: #2fe0a4;          /* 薄荷电光绿 */
+  --accent-dim: rgba(47, 224, 164, 0.14);
+  --accent-glow: rgba(47, 224, 164, 0.45);
+  --cyan: #56c8ff;            /* 辅助青 */
+  --amber: #ffc46b;
+  --coral: #ff7a7a;
+  --header-bg: rgba(11, 16, 23, 0.75);
+  --panel-gradient: linear-gradient(180deg, rgba(20, 28, 39, 0.9), rgba(16, 22, 31, 0.92));
+  --card-tint: rgba(16, 22, 31, 0.6);
+  --track-bg: rgba(94, 128, 148, 0.14);
+  --scrollbar-thumb: rgba(94, 128, 148, 0.25);
+  --glow-1: rgba(47, 224, 164, 0.07);
+  --glow-2: rgba(86, 200, 255, 0.05);
+  --grid-line: rgba(94, 128, 148, 0.05);
+  --font-sans: 'IBM Plex Sans', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'SF Mono', 'PingFang SC', monospace;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg-void: #f3f5f7;
+  --bg-base: #ffffff;
+  --bg-panel: #ffffff;
+  --bg-elevated: #f7fafc;
+  --border-faint: rgba(45, 74, 96, 0.14);
+  --border-strong: rgba(12, 157, 116, 0.38);
+  --text-primary: #1a2530;
+  --text-secondary: #5a6a7a;
+  --text-faint: #8b98a6;
+  --accent: #0c9d74;
+  --accent-dim: rgba(12, 157, 116, 0.12);
+  --accent-glow: rgba(12, 157, 116, 0.35);
+  --cyan: #0d84c9;
+  --amber: #b0720d;
+  --coral: #d9504f;
+  --header-bg: rgba(255, 255, 255, 0.78);
+  --panel-gradient: linear-gradient(180deg, #ffffff, #fafcfd);
+  --card-tint: rgba(255, 255, 255, 0.65);
+  --track-bg: rgba(45, 74, 96, 0.12);
+  --scrollbar-thumb: rgba(45, 74, 96, 0.28);
+  --glow-1: rgba(12, 157, 116, 0.07);
+  --glow-2: rgba(13, 132, 201, 0.05);
+  --grid-line: rgba(45, 74, 96, 0.055);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg-void);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 全局网格纹理 + 顶部辉光 */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(1200px 400px at 20% -10%, var(--glow-1), transparent 60%),
+    radial-gradient(900px 380px at 85% -12%, var(--glow-2), transparent 60%),
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: auto, auto, 44px 44px, 44px 44px;
+}
+
+/* 等宽数字 */
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+/* 面板通用 */
+.panel {
+  background: var(--panel-gradient);
+  border: 1px solid var(--border-faint);
+  border-radius: 10px;
+  position: relative;
+}
+
+.panel::after {
+  /* 顶部电光细线 */
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 12%;
+  right: 12%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border-strong), transparent);
+}
+
+/* WS 呼吸灯 */
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+  animation: pulse 2s ease-in-out infinite;
+}
+.live-dot.off {
+  background: var(--text-faint);
+  box-shadow: none;
+  animation: none;
+}
+.live-dot.warn {
+  background: var(--amber);
+  box-shadow: 0 0 8px var(--amber);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* 实时请求流行滑入 */
+@keyframes slide-in-row {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+    background: var(--accent-dim);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    background: transparent;
+  }
+}
+.row-live {
+  animation: slide-in-row 0.6s ease-out;
+}
+
+/* 页面进入：整体上浮渐显 */
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.page-enter {
+  animation: page-enter 0.45s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+/* 数字跳动（统计卡片更新） */
+@keyframes tick {
+  0% {
+    color: var(--accent);
+  }
+  100% {
+    color: inherit;
+  }
+}
+.tick {
+  animation: tick 0.9s ease-out;
+}
+
+/* 滚动条 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 5px;
+  border: 2px solid var(--bg-base);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 品牌字标 */
+.brand {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.brand .accent {
+  color: var(--accent);
+}
+
+/* 侧边栏菜单压暗背景，融入面板 */
+.sider-panel {
+  background: transparent !important;
+  border-right: 1px solid var(--border-faint);
+}
+
+/* ============ 移动端适配（< 768px） ============ */
+@media (max-width: 767px) {
+  /* 卡片标题与 extra（筛选栏/按钮组）换行铺满，避免横向溢出 */
+  .ant-card .ant-card-head {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  .ant-card .ant-card-head-wrapper {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  .ant-card .ant-card-extra {
+    width: 100%;
+    margin-inline-start: 0;
+  }
+
+  /* 表格更紧凑；页码信息独占一行 */
+  .ant-table-wrapper .ant-table-cell {
+    padding-inline: 10px;
+  }
+  .ant-table-wrapper .ant-table-pagination.ant-pagination {
+    margin: 12px 0 8px;
+  }
+  .ant-pagination .ant-pagination-total-text {
+    flex-basis: 100%;
+    text-align: left;
+  }
+
+  /* 移动端容忍横向滚动的细滚动条 */
+  ::-webkit-scrollbar {
+    height: 6px;
+  }
+}
+
+/* 表格为 table-layout: fixed，列宽锁死后单元格内容一律裁剪，
+   防止长模型名 / 标签溢出到列边界外（表现为行超出表格宽度） */
+.ant-table-wrapper .ant-table-cell {
+  overflow: hidden;
+}

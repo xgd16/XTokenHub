@@ -1,0 +1,23 @@
+# XTokenHub 默认配置
+server:
+  host: 0.0.0.0
+  port: 9192
+  mode: release        # debug | release | test
+
+database:
+  driver: sqlite     # 纯 Go 驱动 glebarez/sqlite
+  path: data/xtokenhub.db
+  enable_log: false
+
+log:
+  level: info        # debug | info | warn | error
+  format: json       # json | text
+
+ws:
+  ping_interval: 30  # 服务端心跳间隔(秒)
+  write_timeout: 10  # 单次写超时(秒)
+
+gateway:
+  upstream_timeout: 300        # 非流式上游超时(秒)
+  max_body_bytes: 20971520     # 请求体上限 20MB
+  require_key: true            # 网关强制校验 API Key（Authorization: Bearer / x-api-key）
