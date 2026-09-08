@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/logo.png" width="96" alt="XTokenHub Logo"/>
+
 # XTokenHub
 
 **AI API 聚合网关 · 统一管理你的所有模型 Token**
@@ -23,6 +25,8 @@
 | ![仪表盘](docs/screenshot-dashboard.png) | ![渠道管理](docs/screenshot-channels.png) |
 | **模型用量** | **API Keys** |
 | ![模型用量](docs/screenshot-model-usage.png) | ![API Keys](docs/screenshot-apikeys.png) |
+| **macOS 菜单栏伴侣应用** | |
+| <img src="docs/screenshot-menubar.png" width="360" alt="macOS 菜单栏应用"/> | |
 
 ## ✨ 主要功能
 
