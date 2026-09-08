@@ -1,12 +1,39 @@
+<div align="center">
+
 # XTokenHub
 
-AI API 聚合网关：把各模型厂家的上游 API 汇聚成渠道，对外统一暴露三种标准协议端点，并实时统计 token 用量与缓存命中率。
+**AI API 聚合网关 · 统一管理你的所有模型 Token**
+
+把各模型厂家的上游 API 汇聚成渠道，对外统一暴露三种标准协议端点，实时统计 token 用量与缓存命中率。
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+![Go](https://img.shields.io/badge/Go-1.x-00ADD8?logo=go&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-零%20CGO-003B57?logo=sqlite&logoColor=white)
+![Test](https://img.shields.io/badge/覆盖率-87.6%25-brightgreen)
+
+</div>
+
+---
 
 **核心原则：能用原生协议就原生透传，不做格式转换；转换只作为兜底路径。**
 
-- 后端：Go + Gin + GORM + SQLite（纯 Go 驱动 glebarez/sqlite，零 CGO）+ Viper + gorilla/websocket
-- 前端：React 19 + TypeScript 7 + Ant Design 6 + Vite 8（构建产物经 go:embed 打进单二进制）
-- 质量门禁：每个模块配单元测试（外部测试包），`go test ./... -race` 全绿，语句覆盖率 87.6%
+| 仪表盘 | 渠道管理 |
+|---|---|
+| ![仪表盘](docs/screenshot-dashboard.png) | ![渠道管理](docs/screenshot-channels.png) |
+| **模型用量** | **API Keys** |
+| ![模型用量](docs/screenshot-model-usage.png) | ![API Keys](docs/screenshot-apikeys.png) |
+
+## ✨ 主要功能
+
+- **🔑 Token 统一管理** —— 到处散落的厂家 API Key 收拢到一个面板：渠道化录入、一键探测可用性、启停切换、余额查询（如 DeepSeek），再也不用在配置文件里翻找密钥；
+- **🗂 模型分组** —— 每条渠道挂载自己的模型清单（支持从上游一键拉取），多个上游聚合为统一的 `/v1/models` 视图；按 priority / weight 加权路由，同模型多渠道自动 failover；
+- **📊 使用量快速了解** —— 仪表盘实时呈现请求数、token 用量、缓存命中率、平均耗时，按模型 / 渠道 / 调用方密钥多维聚合，配 GitHub 风格 Token 活动热力图与每日趋势图，WebSocket 实时推送；
+- **🔄 协议转换** —— 对外同时暴露 OpenAI（`/v1/chat/completions`、`/v1/responses`）与 Anthropic（`/v1/messages`）三端点，入站与上游协议不一致时自动转换；一致则零转换原生透传，保住工具调用、多模态等完整能力；
+- **🧾 网关密钥与按调用方统计** —— 签发 `sk-xt-*` 网关密钥分发给不同客户端，按密钥聚合请求数与 token，谁用得多一目了然；
+- **📦 单二进制自托管** —— 前端经 go:embed 内嵌，`make build` 产出一个静态二进制（零 CGO），拷到任何 Linux/macOS 机器即可跑。
+
+**技术栈**：后端 Go + Gin + GORM + SQLite（纯 Go 驱动 glebarez/sqlite）+ Viper + gorilla/websocket；前端 React 19 + TypeScript + Ant Design 6 + Vite；每个模块配单元测试，`go test ./... -race` 全绿，语句覆盖率 87.6%。
 
 ## 架构
 
