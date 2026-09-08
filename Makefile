@@ -27,7 +27,7 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 
 # dist 目标打包的平台矩阵
-DIST_PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
+DIST_PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
 .PHONY: dev server-dev web-dev web server compile build test cover web-test lint tidy clean dist dist-pmos
 
@@ -58,14 +58,19 @@ compile:
 ## build: 构建前端 + 编译静态单二进制（内嵌前端产物）
 build: web compile
 
-## dist: 交叉打包常见平台到 dist/（每平台静态单文件 + tar.gz，含前端内嵌）
+## dist: 交叉打包常见平台到 dist/（每平台静态单文件；unix -> tar.gz，windows -> zip，含前端内嵌）
 dist: web
 	@mkdir -p $(DIST_DIR)
 	@set -e; for p in $(DIST_PLATFORMS); do \
 	  os=$${p%/*}; arch=$${p#*/}; name=xtokenhub-$$os-$$arch; \
 	  echo "==> $$os/$$arch"; \
-	  CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/$$name ./cmd/server; \
-	  tar -C $(DIST_DIR) -czf $(DIST_DIR)/$$name.tar.gz $$name; \
+	  if [ $$os = windows ]; then \
+	    CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/$$name.exe ./cmd/server; \
+	    (cd $(DIST_DIR) && zip -q $$name.zip $$name.exe); \
+	  else \
+	    CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/$$name ./cmd/server; \
+	    tar -C $(DIST_DIR) -czf $(DIST_DIR)/$$name.tar.gz $$name; \
+	  fi; \
 	done; \
 	ls -lh $(DIST_DIR)/xtokenhub-*
 

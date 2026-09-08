@@ -44,7 +44,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd dist
-          shasum -a 256 xtokenhub-*.tar.gz > checksums.txt
+          shasum -a 256 xtokenhub-* > checksums.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -53,4 +53,28 @@ jobs:
           generate_release_notes: true
           files: |
             dist/xtokenhub-*.tar.gz
+            dist/xtokenhub-*.zip
             dist/checksums.txt
+
+  # macOS 菜单栏伴侣应用：云端构建 dmg（macos-26 runner 自带 Xcode 26）
+  dmg:
+    runs-on: macos-26
+    needs: release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Build DMG
+        run: |
+          cd XTokenHubMenuBar
+          make package DMG_NAME=XTokenHubMenuBar-${GITHUB_REF_NAME}-macos.dmg
+
+      - name: Upload DMG to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: XTokenHub ${{ github.ref_name }}
+          generate_release_notes: true
+          files: XTokenHubMenuBar/XTokenHubMenuBar-*-macos.dmg

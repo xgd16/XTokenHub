@@ -2,6 +2,7 @@ APP_NAME  := XTokenHubMenuBar
 PROJECT   := $(APP_NAME).xcodeproj
 SCHEME    := $(APP_NAME)
 BUILD_DIR := .build
+DMG_NAME  ?= $(APP_NAME)-1.0.0.dmg
 
 .PHONY: gen build run test icon package clean
 
@@ -31,7 +32,7 @@ package: gen
 	rm -rf .dmg-stage && mkdir -p .dmg-stage
 	cp -R $(BUILD_DIR)/Build/Products/Release/$(APP_NAME).app .dmg-stage/
 	ln -s /Applications .dmg-stage/Applications
-	hdiutil create -volname $(APP_NAME) -srcfolder .dmg-stage -ov -format UDZO $(APP_NAME)-1.0.0.dmg
+	hdiutil create -volname $(APP_NAME) -srcfolder .dmg-stage -ov -format UDZO $(DMG_NAME)
 	rm -rf .dmg-stage
 
 clean:
