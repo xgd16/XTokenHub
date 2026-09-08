@@ -13,10 +13,12 @@ import {
   MoonOutlined,
   SunOutlined,
 } from '@ant-design/icons'
-import { Outlet, useLocation, useNavigate } from 'react-router'
+import { useLocation, useNavigate, useOutlet } from 'react-router'
+import { AnimatePresence, motion } from 'motion/react'
 import { useWsStatus } from '../api/ws'
 import { useIsMobile } from '../utils/useIsMobile'
 import { toggleThemeMode, useThemeMode } from '../theme'
+import { easeOutExpo } from '../utils/motion'
 
 const { Sider, Header, Content } = Layout
 
@@ -105,6 +107,35 @@ const HEADER_STYLE: CSSProperties = {
   backdropFilter: 'blur(8px)',
 }
 
+/** 背景极光：缓慢漂移的柔和色块，营造深邃空间感（pointer-events:none，不干扰交互）。 */
+function AuroraBg() {
+  return (
+    <div className="bg-aurora" aria-hidden="true">
+      <div className="aurora-blob blob-1" />
+      <div className="aurora-blob blob-2" />
+    </div>
+  )
+}
+
+/** 页面切换：路由变化时旧页淡出、新页上浮淡入（keyed by pathname）。 */
+function PageTransition() {
+  const location = useLocation()
+  const outlet = useOutlet()
+  return (
+    <AnimatePresence mode="wait">
+      <motion.div
+        key={location.pathname}
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -8 }}
+        transition={{ duration: 0.3, ease: easeOutExpo }}
+      >
+        {outlet}
+      </motion.div>
+    </AnimatePresence>
+  )
+}
+
 /** 控制台布局：桌面为 侧栏+顶栏+内容区；移动端为 顶栏(汉堡)+内容区+抽屉导航。 */
 export default function ConsoleLayout() {
   const navigate = useNavigate()
@@ -126,6 +157,7 @@ export default function ConsoleLayout() {
   if (isMobile) {
     return (
       <div style={{ minHeight: '100dvh', position: 'relative', zIndex: 1 }}>
+        <AuroraBg />
         <Header style={{ ...HEADER_STYLE, justifyContent: 'space-between', paddingInline: 8 }}>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 2, minWidth: 0 }}>
             <Button
@@ -145,9 +177,7 @@ export default function ConsoleLayout() {
           </div>
         </Header>
         <Content style={{ padding: '12px 12px calc(24px + env(safe-area-inset-bottom))' }}>
-          <div className="page-enter" key={location.pathname}>
-            <Outlet />
-          </div>
+          <PageTransition />
         </Content>
         <Drawer
           placement="left"
@@ -173,6 +203,7 @@ export default function ConsoleLayout() {
 
   return (
     <Layout style={{ height: '100vh', background: 'transparent', position: 'relative', zIndex: 1, overflow: 'hidden' }}>
+      <AuroraBg />
       <Sider
         collapsible
         collapsed={collapsed}
@@ -204,9 +235,7 @@ export default function ConsoleLayout() {
           </div>
         </Header>
         <Content style={{ padding: 24 }}>
-          <div className="page-enter" key={location.pathname}>
-            <Outlet />
-          </div>
+          <PageTransition />
         </Content>
       </Layout>
     </Layout>

@@ -171,11 +171,11 @@ func TestModelUsageWindows(t *testing.T) {
 	now := time.Now()
 
 	seedLogs(t, repo, []model.RequestLog{
-		{Model: "gpt-4o", PromptTokens: 10, CompletionTokens: 5, CachedTokens: 3, CreatedAt: now.Add(-30 * time.Minute)},        // 仅 1h 窗
-		{Model: "gpt-4o", PromptTokens: 20, CompletionTokens: 5, CreatedAt: now.Add(-2 * time.Hour)},                            // 24h/7d/30d
-		{Model: "claude-3", PromptTokens: 30, CompletionTokens: 10, CreatedAt: now.Add(-3 * 24 * time.Hour)},                    // 7d/30d
-		{Model: "deepseek", PromptTokens: 40, CompletionTokens: 20, CreatedAt: now.Add(-20 * 24 * time.Hour)},                   // 仅 30d
-		{Model: "too-old", PromptTokens: 99, CompletionTokens: 99, CreatedAt: now.Add(-40 * 24 * time.Hour)},                    // 30d 之外
+		{Model: "gpt-4o", PromptTokens: 10, CompletionTokens: 5, CachedTokens: 3, CreatedAt: now.Add(-30 * time.Minute)}, // 仅 1h 窗
+		{Model: "gpt-4o", PromptTokens: 20, CompletionTokens: 5, CreatedAt: now.Add(-2 * time.Hour)},                     // 24h/7d/30d
+		{Model: "claude-3", PromptTokens: 30, CompletionTokens: 10, CreatedAt: now.Add(-3 * 24 * time.Hour)},             // 7d/30d
+		{Model: "deepseek", PromptTokens: 40, CompletionTokens: 20, CreatedAt: now.Add(-20 * 24 * time.Hour)},            // 仅 30d
+		{Model: "too-old", PromptTokens: 99, CompletionTokens: 99, CreatedAt: now.Add(-40 * 24 * time.Hour)},             // 30d 之外
 	})
 
 	usage, err := repo.ModelUsage(ctx, now)
@@ -289,5 +289,71 @@ func TestTrendByBucket(t *testing.T) {
 		if p.Ts == 0 || p.Ts%3600 != 0 {
 			t.Errorf("bucket ts 未对齐: %+v", p)
 		}
+	}
+}
+
+// TestRequestLogDeleteBefore 保留期删除：只删 cutoff 前行，保留期内不动。
+func TestRequestLogDeleteBefore(t *testing.T) {
+	db := NewTestDB(t)
+	repo := repository.NewRequestLogRepository(db)
+	ctx := context.Background()
+
+	now := time.Now()
+	seedLogs(t, repo, []model.RequestLog{
+		{Model: "m1", Protocol: model.ProtocolChatCompletions, ForwardMode: model.ForwardNativePassthrough, CreatedAt: now.AddDate(0, 0, -120)},
+		{Model: "m1", Protocol: model.ProtocolChatCompletions, ForwardMode: model.ForwardNativePassthrough, CreatedAt: now.AddDate(0, 0, -100)},
+		{Model: "m1", Protocol: model.ProtocolChatCompletions, ForwardMode: model.ForwardNativePassthrough, CreatedAt: now.AddDate(0, 0, -91)}, // 临界：刚好 cutoff 前
+		{Model: "m1", Protocol: model.ProtocolChatCompletions, ForwardMode: model.ForwardNativePassthrough, CreatedAt: now.AddDate(0, 0, -89)},
+		{Model: "m1", Protocol: model.ProtocolChatCompletions, ForwardMode: model.ForwardNativePassthrough, CreatedAt: now.Add(-time.Hour)},
+	})
+
+	cutoff := now.AddDate(0, 0, -90)
+	n, err := repo.DeleteBefore(ctx, cutoff, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Fatalf("deleted = %d, want 3", n)
+	}
+	// 保留期内 2 行仍在
+	_, total, err := repo.List(ctx, repository.LogFilter{}, pagination.Normalize(1, 10))
+	if err != nil || total != 2 {
+		t.Fatalf("remaining = %d, err = %v, want 2", total, err)
+	}
+}
+
+// TestRequestLogDeleteBeforeBatch 单批 limit 生效：分批调用直至删完。
+func TestRequestLogDeleteBeforeBatch(t *testing.T) {
+	db := NewTestDB(t)
+	repo := repository.NewRequestLogRepository(db)
+	ctx := context.Background()
+
+	now := time.Now()
+	for i := 0; i < 5; i++ {
+		if err := repo.Create(ctx, &model.RequestLog{
+			Model: "m1", Protocol: model.ProtocolChatCompletions, ForwardMode: model.ForwardNativePassthrough,
+			CreatedAt: now.AddDate(0, 0, -100),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cutoff := now.AddDate(0, 0, -90)
+	var total int64
+	for i := 0; i < 10; i++ {
+		n, err := repo.DeleteBefore(ctx, cutoff, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += n
+		if n < 2 {
+			break
+		}
+	}
+	if total != 5 {
+		t.Fatalf("batch deleted = %d, want 5", total)
+	}
+	if _, cnt, err := repo.List(ctx, repository.LogFilter{}, pagination.Normalize(1, 10)); err != nil || cnt != 0 {
+		t.Fatalf("remaining = %d, err = %v, want 0", cnt, err)
 	}
 }

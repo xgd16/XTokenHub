@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"xtokenhub/internal/cleanup"
 	"xtokenhub/internal/config"
 	"xtokenhub/internal/database"
 	"xtokenhub/internal/eventbus"
@@ -103,6 +104,20 @@ func main() {
 	thCtx, thCancel := context.WithCancel(context.Background())
 	go throughput.Run(thCtx)
 
+	// 日志保留期清理（默认开启；手动 API 始终可用）
+	retention := cleanup.NewRetention(logRepo, db, cleanup.Options{
+		Enabled:     cfg.Retention.Enabled,
+		MaxDays:     cfg.Retention.MaxDays,
+		IntervalHrs: cfg.Retention.IntervalHours,
+		BatchSize:   cfg.Retention.BatchSize,
+		Vacuum:      cfg.Retention.Vacuum,
+	})
+	retSvc := service.NewRetentionService(retention)
+	retCtx, retCancel := context.WithCancel(context.Background())
+	if cfg.Retention.Enabled {
+		go retention.Run(retCtx)
+	}
+
 	// 路由
 	engine := gin.New()
 	deps := &router.Deps{
@@ -113,6 +128,7 @@ func main() {
 		Keys:         admin.NewKeyHandler(keySvc),
 		Logs:         admin.NewLogHandler(logSvc),
 		Stats:        admin.NewStatsHandler(statsSvc),
+		Cleanup:      admin.NewCleanupHandler(retSvc),
 		WS:           admin.NewWSHandler(hub),
 		Gateway:      gwhandler.NewHandler(exec, keySvc, cfg.Gateway.RequireKey, cfg.Gateway.MaxBodyBytes),
 	}
@@ -149,6 +165,7 @@ func main() {
 		log.Error("HTTP 关闭超时", logger.Err(err))
 	}
 	thCancel()
+	retCancel()
 	hub.Close()
 	bus.Wait()
 	if sqlDB, err := db.DB(); err == nil {

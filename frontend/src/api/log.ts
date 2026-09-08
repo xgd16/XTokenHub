@@ -40,6 +40,32 @@ export interface LogQuery {
   hours?: number
 }
 
+/** 手动清理结果。 */
+export interface CleanupResult {
+  deleted_rows: number
+  duration_ms: number
+  cutoff: string
+  started_at: string
+  done_at: string
+  error?: string
+}
+
+/** 清理状态。 */
+export interface CleanupStatus {
+  enabled: boolean
+  max_days: number
+  interval_hours: number
+  vacuum: boolean
+  last_run_at?: string
+  last_deleted_rows: number
+  last_duration_ms: number
+  last_error?: string
+}
+
 export const logApi = {
   list: (params: LogQuery) => request<PageData<RequestLog>>({ url: '/api/v1/logs', method: 'GET', params }),
+  /** 手动触发一次清理。 */
+  triggerCleanup: () => request<CleanupResult>({ url: '/api/v1/logs/cleanup', method: 'POST' }),
+  /** 清理状态。 */
+  cleanupStatus: () => request<CleanupStatus>({ url: '/api/v1/logs/cleanup', method: 'GET' }),
 }

@@ -21,3 +21,10 @@ gateway:
   upstream_timeout: 300        # 非流式上游超时(秒)
   max_body_bytes: 20971520     # 请求体上限 20MB
   require_key: true            # 网关强制校验 API Key（Authorization: Bearer / x-api-key）
+
+retention:
+  enabled: true          # 是否启用后台定时清理过期请求日志
+  max_days: 90           # 保留最近 N 天日志，超期行自动删除
+  interval_hours: 24     # 清理运行周期(小时)
+  batch_size: 1000       # 单批删除行数，分批执行避免长事务
+  vacuum: false          # 清理生效后执行 VACUUM 回收磁盘空间（独占锁，建议低峰开启）

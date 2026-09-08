@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
-import { App, Card, Input, Select, Space, Switch, Table, Tag, Tooltip } from 'antd'
+import { App, Card, Input, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip } from 'antd'
 import type { TableColumnsType } from 'antd'
-import { LoadingOutlined, ReloadOutlined } from '@ant-design/icons'
+import { ClearOutlined, LoadingOutlined, ReloadOutlined } from '@ant-design/icons'
 import LiveDuration from '../components/LiveDuration'
 import LogDetail from '../components/LogDetail'
 import { channelApi, type Channel } from '../api/channel'
 import { keyApi, type APIKey } from '../api/key'
-import { logApi, type LogQuery, type RequestLog } from '../api/log'
+import { logApi, type CleanupStatus, type LogQuery, type RequestLog } from '../api/log'
 import { WS_EVENTS, useWsEvent, useWsReconnected } from '../api/ws'
 import { agentShort, compactCN, duration, fullTime, hitRateColor, modeShort, percent, protocolShort, timeOf } from '../utils/format'
 import { useIsMobile } from '../utils/useIsMobile'
@@ -207,6 +207,8 @@ export default function RequestLogs() {
   const [channels, setChannels] = useState<Channel[]>([])
   const [keys, setKeys] = useState<APIKey[]>([])
   const [filters, setFilters] = useState<LogQuery>({})
+  const [cleanupStatus, setCleanupStatus] = useState<CleanupStatus | null>(null)
+  const [cleaning, setCleaning] = useState(false)
 
   const load = useCallback(
     async (p = page) => {
@@ -232,6 +234,26 @@ export default function RequestLogs() {
     void channelApi.list({ per_page: 200 }).then((d) => setChannels(d.items ?? [])).catch(() => undefined)
     void keyApi.list({ per_page: 200 }).then((d) => setKeys(d.items ?? [])).catch(() => undefined)
   }, [])
+
+  // 清理状态：展示保留天数与上次清理信息
+  useEffect(() => {
+    void logApi.cleanupStatus().then(setCleanupStatus).catch(() => undefined)
+  }, [])
+
+  // 手动清理：成功后刷新列表
+  const doCleanup = useCallback(async () => {
+    setCleaning(true)
+    try {
+      const res = await logApi.triggerCleanup()
+      message.success(res.error ? `清理完成但出错：${res.error}` : `已清理 ${compactCN(res.deleted_rows)} 条过期日志`)
+      void logApi.cleanupStatus().then(setCleanupStatus).catch(() => undefined)
+      await load()
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setCleaning(false)
+    }
+  }, [load, message])
 
   // 新请求受理即插入"运行中"行（仅第 1 页且无筛选时）；完成事件原位替换并计数。
   // 幂等保护：completed 偶发先于 started 到达（或重复推送）时，以先到者为准。
@@ -337,6 +359,35 @@ export default function RequestLogs() {
               <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>仅错误</span>
               <Switch size="small" onChange={(v) => setFilter({ error_only: v })} />
             </Space>
+          </Tooltip>
+          <Tooltip
+            title={
+              <div style={{ fontSize: 12, lineHeight: 1.7 }}>
+                <div>保留最近 {cleanupStatus?.max_days ?? 90} 天，定时清理周期 {cleanupStatus?.interval_hours ?? 24}h</div>
+                {cleanupStatus?.enabled === false && <div style={{ color: 'var(--amber)' }}>后台定时清理已关闭，仍可手动执行</div>}
+                {cleanupStatus?.last_run_at && (
+                  <div>
+                    上次 {fullTime(cleanupStatus.last_run_at)} · 删除 {compactCN(cleanupStatus.last_deleted_rows)} 条
+                  </div>
+                )}
+              </div>
+            }
+          >
+            <Popconfirm
+              title="清理过期请求日志"
+              description={`将删除超过 ${cleanupStatus?.max_days ?? 90} 天的日志；SQLite 删除后文件大小不会自动收缩。`}
+              okText="清理"
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
+              onConfirm={() => void doCleanup()}
+            >
+              <button
+                className="ant-btn ant-btn-default"
+                style={{ height: 32, borderRadius: 6, color: 'var(--text-secondary)', background: 'transparent', border: '1px solid var(--border-faint)', cursor: 'pointer' }}
+              >
+                {cleaning ? <LoadingOutlined spin /> : <ClearOutlined />} 清理过期日志
+              </button>
+            </Popconfirm>
           </Tooltip>
           <button
             className="ant-btn ant-btn-default"

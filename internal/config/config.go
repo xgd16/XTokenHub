@@ -10,11 +10,12 @@ import (
 
 // Config 全局配置。
 type Config struct {
-	Server   ServerConfig   `mapstructure:"server"`
-	Database DatabaseConfig `mapstructure:"database"`
-	Log      LogConfig      `mapstructure:"log"`
-	WS       WSConfig       `mapstructure:"ws"`
-	Gateway  GatewayConfig  `mapstructure:"gateway"`
+	Server    ServerConfig    `mapstructure:"server"`
+	Database  DatabaseConfig  `mapstructure:"database"`
+	Log       LogConfig       `mapstructure:"log"`
+	WS        WSConfig        `mapstructure:"ws"`
+	Gateway   GatewayConfig   `mapstructure:"gateway"`
+	Retention RetentionConfig `mapstructure:"retention"`
 }
 
 type ServerConfig struct {
@@ -51,6 +52,19 @@ type GatewayConfig struct {
 	MaxBodyBytes int64 `mapstructure:"max_body_bytes"`
 	// RequireKey 网关是否强制校验 API Key（Authorization: Bearer / x-api-key）。
 	RequireKey bool `mapstructure:"require_key"`
+}
+
+type RetentionConfig struct {
+	// Enabled 是否启用后台定时清理 request_logs。
+	Enabled bool `mapstructure:"enabled"`
+	// MaxDays 保留最近 N 天日志，超期行自动删除。
+	MaxDays int `mapstructure:"max_days"`
+	// IntervalHours 清理运行周期（小时）。
+	IntervalHours int `mapstructure:"interval_hours"`
+	// BatchSize 单批删除行数，分批执行避免长事务。
+	BatchSize int `mapstructure:"batch_size"`
+	// Vacuum 每次清理生效后执行 VACUUM 回收磁盘空间（独占锁，默认关闭）。
+	Vacuum bool `mapstructure:"vacuum"`
 }
 
 // Load 读取配置：priority env( XT_HUB_ 前缀 ) > yaml > 内置默认值。
@@ -95,6 +109,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("gateway.upstream_timeout", 300)
 	v.SetDefault("gateway.max_body_bytes", 20<<20) // 20MB
 	v.SetDefault("gateway.require_key", true)
+	v.SetDefault("retention.enabled", true)
+	v.SetDefault("retention.max_days", 90)
+	v.SetDefault("retention.interval_hours", 24)
+	v.SetDefault("retention.batch_size", 1000)
+	v.SetDefault("retention.vacuum", false)
 }
 
 func (c *Config) validate() error {
@@ -103,6 +122,15 @@ func (c *Config) validate() error {
 	}
 	if c.Database.Path == "" {
 		return fmt.Errorf("database.path 不能为空")
+	}
+	if c.Retention.MaxDays < 1 {
+		return fmt.Errorf("retention.max_days 非法: %d", c.Retention.MaxDays)
+	}
+	if c.Retention.IntervalHours < 1 {
+		return fmt.Errorf("retention.interval_hours 非法: %d", c.Retention.IntervalHours)
+	}
+	if c.Retention.BatchSize < 100 {
+		return fmt.Errorf("retention.batch_size 非法: %d", c.Retention.BatchSize)
 	}
 	return nil
 }

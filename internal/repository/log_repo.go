@@ -27,6 +27,18 @@ func (r *logRepo) Create(ctx context.Context, l *model.RequestLog) error {
 	return r.db.WithContext(ctx).Create(l).Error
 }
 
+// DeleteBefore 删除 created_at 早于 cutoff 的日志，单批最多 limit 行（子查询 LIMIT 分批，
+// 依赖 idx_request_logs_created_at），避免单条大 DELETE 长时间占用 SQLite 单写连接。
+func (r *logRepo) DeleteBefore(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	res := r.db.WithContext(ctx).
+		Where("id IN (SELECT id FROM request_logs WHERE created_at < ? LIMIT ?)", cutoff, limit).
+		Delete(&model.RequestLog{})
+	return res.RowsAffected, res.Error
+}
+
 func (r *logRepo) Get(ctx context.Context, id int64) (*model.RequestLog, error) {
 	var l model.RequestLog
 	if err := r.db.WithContext(ctx).First(&l, id).Error; err != nil {

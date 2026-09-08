@@ -23,6 +23,7 @@ type Deps struct {
 	Keys         *admin.KeyHandler
 	Logs         *admin.LogHandler
 	Stats        *admin.StatsHandler
+	Cleanup      *admin.CleanupHandler
 	WS           *admin.WSHandler
 	Gateway      *gwhandler.Handler
 	WebFS        fs.FS // 前端产物（可为 nil：仅 API）
@@ -60,6 +61,8 @@ func Register(engine *gin.Engine, d *Deps) {
 		api.PUT("/keys/:id", d.Keys.Update)
 		api.DELETE("/keys/:id", d.Keys.Delete)
 		api.GET("/logs", d.Logs.List)
+		api.GET("/logs/cleanup", d.Cleanup.Status)
+		api.POST("/logs/cleanup", d.Cleanup.Trigger)
 		api.GET("/stats/summary", d.Stats.Summary)
 		api.GET("/stats/trend", d.Stats.Trend)
 		api.GET("/stats/by-model", d.Stats.ByModel)

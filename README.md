@@ -87,6 +87,8 @@ POST   /api/v1/keys                   创建密钥（服务端生成 sk-xt-*，�
 PUT    /api/v1/keys/:id               改名/启停/备注（key 本体不可改）
 DELETE /api/v1/keys/:id
 GET    /api/v1/logs                   请求日志（protocol/forward_mode/channel_id/key_id/model/stream/hours/error_only 筛选）
+GET    /api/v1/logs/cleanup           日志清理状态（enabled/保留天数/上次运行信息）
+POST   /api/v1/logs/cleanup           手动触发一次清理（返回删除行数/耗时/cutoff）
 GET    /api/v1/stats/summary?hours=24 汇总（请求数/token/缓存命中率/平均耗时/透传占比；
                                       可传 since=<unix秒> 显式指定窗口起点，前端传本地零点即「当天」口径）
 GET    /api/v1/stats/trend?days=7     按日趋势（days 最长 366，供热力图/长区间）
@@ -155,6 +157,31 @@ make web
 配置优先级：`XT_HUB_*` 环境变量 > `configs/config.yaml` > 内置默认值（如 `XT_HUB_SERVER__PORT=9090`）。
 
 SQLite 数据落盘 `data/xtokenhub.db`（WAL 模式、单写连接）。
+
+### 日志保留期清理
+
+`request_logs` 是唯一持续增长的表（每请求一行）。服务默认每 24 小时清理一次，删除超过 `max_days`（默认 90 天）的日志，也可在「请求日志」页右上角点击「清理过期日志」，或通过 `POST /api/v1/logs/cleanup` 手动触发（后台已有清理运行时返回「清理正在进行中」）。
+
+| 配置 | 默认 | 说明 |
+|---|---|---|
+| `retention.enabled` | `true` | 后台定时自动清理；关闭后仍可手动触发 |
+| `retention.max_days` | `90` | 保留最近 N 天日志（>0） |
+| `retention.interval_hours` | `24` | 清理运行周期（小时） |
+| `retention.batch_size` | `1000` | 单批删除行数（>=100，分批避免长时间占用单写连接） |
+| `retention.vacuum` | `false` | 清理生效后执行 `VACUUM` 回收磁盘空间（独占锁，建议低峰开启） |
+
+环境变量覆盖示例：`XT_HUB_RETENTION__MAX_DAYS=30`。
+
+注意：清理后 SQLite 文件大小不会自动缩减（删除只释放页），需要开启 `vacuum` 或定时手动 `VACUUM`；仪表盘「全历史累计」等以保留期为界，热力图/按日趋势最长展示区间内的历史。
+
+## macOS 菜单栏伴侣应用（XTokenHubMenuBar）
+
+[`XTokenHubMenuBar/`](XTokenHubMenuBar/README.md) 是一个独立 SwiftUI 应用（类 iStat Menus，基于 macOS 26 Liquid Glass），在系统菜单栏实时展示网关 token 用量与请求流，仅消费本项目的管理 API 与 WebSocket，后端零改动：
+
+```bash
+brew install xcodegen
+cd XTokenHubMenuBar && make run
+```
 
 ## 测试
 

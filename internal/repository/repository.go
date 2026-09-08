@@ -50,6 +50,9 @@ type RequestLogRepository interface {
 	DailyUsage(ctx context.Context, since time.Time) ([]DayUsage, error)
 	// TrendByDayModel 按日 × 模型聚合 token 用量，供多模型趋势线。
 	TrendByDayModel(ctx context.Context, since time.Time) ([]ModelDayPoint, error)
+	// DeleteBefore 分批删除 created_at 早于 cutoff 的日志，单批最多 limit 行，返回实际删除行数。
+	// 供保留期清理任务使用；需反复调用直至返回数小于 limit。
+	DeleteBefore(ctx context.Context, cutoff time.Time, limit int) (int64, error)
 }
 
 // LogFilter 日志筛选条件，零值表示不过滤。

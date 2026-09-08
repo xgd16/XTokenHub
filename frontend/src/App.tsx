@@ -2,6 +2,7 @@ import { useEffect, useMemo } from 'react'
 import { App as AntdApp, ConfigProvider, theme } from 'antd'
 import type { ThemeConfig } from 'antd'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router'
+import { MotionConfig } from 'motion/react'
 import zhCN from 'antd/locale/zh_CN'
 import dayjs from 'dayjs'
 import 'dayjs/locale/zh-cn'
@@ -67,19 +68,22 @@ export default function App() {
   return (
     <ConfigProvider locale={zhCN} theme={themeConfig}>
       <AntdApp>
-        <BrowserRouter>
-          <Routes>
-            <Route element={<ConsoleLayout />}>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/channels" element={<Channels />} />
-              <Route path="/models" element={<Models />} />
-              <Route path="/custom-models" element={<CustomModels />} />
-              <Route path="/keys" element={<Keys />} />
-              <Route path="/logs" element={<RequestLogs />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Route>
-          </Routes>
-        </BrowserRouter>
+        {/* reducedMotion="user"：系统开启「减弱动态效果」时自动跳过 transform/布局动画 */}
+        <MotionConfig reducedMotion="user">
+          <BrowserRouter>
+            <Routes>
+              <Route element={<ConsoleLayout />}>
+                <Route path="/" element={<Dashboard />} />
+                <Route path="/channels" element={<Channels />} />
+                <Route path="/models" element={<Models />} />
+                <Route path="/custom-models" element={<CustomModels />} />
+                <Route path="/keys" element={<Keys />} />
+                <Route path="/logs" element={<RequestLogs />} />
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Route>
+            </Routes>
+          </BrowserRouter>
+        </MotionConfig>
       </AntdApp>
     </ConfigProvider>
   )

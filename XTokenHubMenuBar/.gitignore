@@ -1,0 +1,8 @@
+# XcodeGen 生成产物
+*.xcodeproj
+xcuserdata/
+
+# 构建输出与安装包
+.build/
+*.dmg
+.DS_Store

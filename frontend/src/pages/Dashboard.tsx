@@ -8,6 +8,8 @@ import LogDetail, { DetailRows } from '../components/LogDetail'
 import TokenHeatmap from '../components/TokenHeatmap'
 import ModelTrendChart from '../components/ModelTrendChart'
 import ModelDonut from '../components/ModelDonut'
+import { AnimatedNumber } from '../components/AnimatedNumber'
+import { Reveal } from '../utils/motion'
 import {
   lifetimeApi,
   statsApi,
@@ -28,6 +30,11 @@ import { useChartPalette } from '../theme'
 
 const { Text } = Typography
 
+/** 百分比格式化：入参为 0~100 的数值（配合 AnimatedNumber 滚动）。 */
+const pct = (n: number) => `${Math.round(n * 10) / 10}%`
+/** 连续天数格式化。 */
+const streak = (n: number) => `${n} 天`
+
 /** 实时流容量：初始拉取与 WS 累积上限（足量行支撑按会话合并）。 */
 const LIVE_FEED_MAX = 30
 
@@ -47,9 +54,15 @@ const TREND_RANGES: { key: TrendRangeKey; label: string; hours: number; bucket: 
   { key: 'd30', label: '30 天', hours: 720, bucket: 'day', days: 30 },
 ]
 
-/** 统计卡片。 */
-function StatCard(props: { label: string; value: string; sub?: string; tick?: boolean }) {
-  const { label, value, sub, tick } = props
+/** 统计卡片：数字驱动 + 弹簧滚动；value 为 null 显示占位。 */
+function StatCard(props: {
+  label: string
+  value: number | null
+  format?: (n: number) => string
+  sub?: string
+  tick?: boolean
+}) {
+  const { label, value, format, sub, tick } = props
   const [flash, setFlash] = useState(false)
   useEffect(() => {
     if (tick) {
@@ -58,6 +71,7 @@ function StatCard(props: { label: string; value: string; sub?: string; tick?: bo
       return () => clearTimeout(t)
     }
   }, [value, tick])
+  const num = value == null
   return (
     <div className="panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '16px 18px', overflow: 'hidden' }}>
       <Text style={{ color: 'var(--text-secondary)', fontSize: 12, letterSpacing: '0.06em' }}>{label}</Text>
@@ -65,7 +79,7 @@ function StatCard(props: { label: string; value: string; sub?: string; tick?: bo
         className={`mono ${flash ? 'tick' : ''}`}
         style={{ fontSize: 26, fontWeight: 600, marginTop: 6, lineHeight: 1.2 }}
       >
-        {value}
+        {num ? '—' : <AnimatedNumber value={value} format={format ?? String} />}
       </div>
       {sub && <div style={{ fontSize: 12, color: 'var(--text-faint)', marginTop: 4 }}>{sub}</div>}
     </div>
@@ -614,43 +628,43 @@ export default function Dashboard() {
   const panelHeaderStyle = { fontSize: 13, color: 'var(--text-secondary)', letterSpacing: '0.06em' } as const
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <Reveal style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Row gutter={[16, 16]} align="stretch">
         <Col xs={12} md={8} lg={4}>
-          <StatCard label="请求总数 · 今天" value={cards ? compactNumber(cards.requests) : '—'} tick />
+          <StatCard label="请求总数 · 今天" value={cards ? cards.requests : null} format={compactNumber} tick />
         </Col>
         <Col xs={12} md={8} lg={4}>
-          <StatCard label="错误请求 · 今天" value={cards ? compactNumber(cards.errors) : '—'} sub="当天失败请求" />
+          <StatCard label="错误请求 · 今天" value={cards ? cards.errors : null} format={compactNumber} sub="当天失败请求" />
         </Col>
         <Col xs={12} md={8} lg={4}>
-          <StatCard label="Token 用量" value={cards ? compactCN(Number(cards.tokens)) : '—'} sub="今天 · prompt + completion" tick />
+          <StatCard label="Token 用量" value={summary ? summary.total_tokens : null} format={compactCN} sub="今天 · prompt + completion" tick />
         </Col>
         <Col xs={12} md={8} lg={4}>
-          <StatCard label="缓存命中率" value={cards ? cards.hitPercent : '—'} sub="cached / prompt" />
+          <StatCard label="缓存命中率" value={summary ? summary.cache_hit_rate * 100 : null} format={pct} sub="cached / prompt" />
         </Col>
         <Col xs={12} md={8} lg={4}>
-          <StatCard label="平均耗时" value={cards ? duration(cards.avgMs) : '—'} sub="今天成功请求均值" />
+          <StatCard label="平均耗时" value={cards ? cards.avgMs : null} format={duration} sub="今天成功请求均值" />
         </Col>
         <Col xs={12} md={8} lg={4}>
-          <StatCard label="原生透传占比" value={cards ? cards.nativePercent : '—'} sub="零转换直连上游" />
+          <StatCard label="原生透传占比" value={summary ? summary.native_ratio * 100 : null} format={pct} sub="零转换直连上游" />
         </Col>
       </Row>
 
       <Row gutter={[16, 16]} align="stretch">
         <Col xs={12} md={8} lg={4}>
-          <StatCard label="累计 Token 数" value={lifetime ? compactCN(lifetime.total_tokens) : '—'} sub={`共 ${lifetime?.active_days ?? 0} 天有用量`} tick />
+          <StatCard label="累计 Token 数" value={lifetime ? lifetime.total_tokens : null} format={compactCN} sub={`共 ${lifetime?.active_days ?? 0} 天有用量`} tick />
         </Col>
         <Col xs={12} md={8} lg={4}>
-          <StatCard label="峰值 Token 数" value={lifetime ? compactCN(lifetime.peak_day_tokens) : '—'} sub={lifetime?.peak_day || '单日最高'} />
+          <StatCard label="峰值 Token 数" value={lifetime ? lifetime.peak_day_tokens : null} format={compactCN} sub={lifetime?.peak_day || '单日最高'} />
         </Col>
         <Col xs={12} md={8} lg={4}>
-          <StatCard label="最长聊天时长" value={lifetime ? durationLong(lifetime.max_duration_ms) : '—'} sub="单次成功请求" />
+          <StatCard label="最长聊天时长" value={lifetime ? lifetime.max_duration_ms : null} format={durationLong} sub="单次成功请求" />
         </Col>
         <Col xs={12} md={8} lg={4}>
-          <StatCard label="当前连续天数" value={lifetime ? `${lifetime.current_streak} 天` : '—'} sub="每天有请求即延续" />
+          <StatCard label="当前连续天数" value={lifetime ? lifetime.current_streak : null} format={streak} sub="每天有请求即延续" />
         </Col>
         <Col xs={12} md={8} lg={4}>
-          <StatCard label="最长连续天数" value={lifetime ? `${lifetime.max_streak} 天` : '—'} sub="历史最长连击" />
+          <StatCard label="最长连续天数" value={lifetime ? lifetime.max_streak : null} format={streak} sub="历史最长连击" />
         </Col>
       </Row>
 
@@ -843,6 +857,6 @@ export default function Dashboard() {
       <div style={{ color: 'var(--text-faint)', fontSize: 12 }} className="mono">
         统计窗口 今天（本地零点起） · 更新于 {summary ? fullTime(new Date().toISOString()) : '—'} · 数据经 WebSocket 实时推送
       </div>
-    </div>
+    </Reveal>
   )
 }
