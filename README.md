@@ -210,3 +210,7 @@ cd frontend && pnpm test:run   # Vitest（WS 重连/退避、格式化、数据�
 - 本地 token 估算为启发式（CJK ≈ 1.5 字/token，拉丁 ≈ 4 字/token），仅作上游未报告 usage 时的兜底；
 - 网关 API Key 已支持（鉴权 + 按调用方统计，见「网关鉴权与按调用方统计」）；管理端 `/api/v1` 仍无登录认证，自托管内网使用场景请自行做好网络隔离；密钥明文存储（与渠道厂家 key 一致）；
 - 统计缓存命中率、按 key 聚合均基于 RequestLog 快照，密钥删除后历史用量仍保留在其名称下。
+
+## License
+
+本项目基于 [MIT License](LICENSE) 开源。
