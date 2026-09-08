@@ -1,0 +1,6 @@
+# config.yml（空文件，用于禁用 GitHub 默认模板选择页的 blank issue 提示语定制）
+blank_issues_enabled: true
+contact_links:
+  - name: 使用讨论
+    url: https://github.com/xgd16/XTokenHub/discussions
+    about: 使用问题与想法交流请到 Discussions
