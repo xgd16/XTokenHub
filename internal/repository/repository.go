@@ -50,6 +50,9 @@ type RequestLogRepository interface {
 	DailyUsage(ctx context.Context, since time.Time) ([]DayUsage, error)
 	// TrendByDayModel 按日 × 模型聚合 token 用量，供多模型趋势线。
 	TrendByDayModel(ctx context.Context, since time.Time) ([]ModelDayPoint, error)
+	// LiveSessions 最近活跃会话的聚合视图：会话统计覆盖全量历史（不受分页/前端窗口截断），
+	// 无 session_id 的散行各自成组；按最后活跃时间倒序，最多 limit 组。
+	LiveSessions(ctx context.Context, in LiveSessionsInput) ([]LiveSession, error)
 	// DeleteBefore 分批删除 created_at 早于 cutoff 的日志，单批最多 limit 行，返回实际删除行数。
 	// 供保留期清理任务使用；需反复调用直至返回数小于 limit。
 	DeleteBefore(ctx context.Context, cutoff time.Time, limit int) (int64, error)
@@ -62,10 +65,40 @@ type LogFilter struct {
 	ChannelID   int64
 	KeyID       int64
 	Model       string
+	SessionID   string
 	Stream      *bool
 	StartTime   *time.Time
 	EndTime     *time.Time
 	ErrorOnly   bool
+}
+
+// LiveSessionsInput 实时会话聚合查询条件。
+type LiveSessionsInput struct {
+	Limit int // 返回组数上限，<=0 取 20，最大 200
+}
+
+// LiveSession 会话聚合视图：同一 session_id 的全部请求合并为一行；无 session_id 的散行各自成组。
+type LiveSession struct {
+	Key              string    `json:"key"`
+	SessionID        string    `json:"session_id"`
+	Requests         int64     `json:"requests"`
+	PromptTokens     int64     `json:"prompt_tokens"`
+	CompletionTokens int64     `json:"completion_tokens"`
+	TotalTokens      int64     `json:"total_tokens"`
+	CachedTokens     int64     `json:"cached_tokens"`
+	TotalMS          int64     `json:"total_ms"`
+	Errors           int64     `json:"errors"`
+	FirstAt          time.Time `json:"first_at"`
+	LastAt           time.Time `json:"last_at"`
+	UserAgent        string    `json:"user_agent"`
+	KeyName          string    `json:"key_name"`
+	Models           []string  `json:"models"`
+	Channels         []string  `json:"channels"`
+	Protocols        []string  `json:"protocols"`
+	Modes            []string  `json:"modes"` // 转发模式去重（native_passthrough / converted）
+	// LastRequest 组内最新请求的完整行，仅散行（无 session_id，count=1）返回：
+	// 供前端展示状态码 / 耗时明细 / 请求头，无需再额外查询。
+	LastRequest *model.RequestLog `json:"last_request,omitempty"`
 }
 
 // Summary 汇总统计。
@@ -130,4 +163,16 @@ type ModelDayPoint struct {
 	Date        string `json:"date"` // YYYY-MM-DD
 	Model       string `json:"model"`
 	TotalTokens int64  `json:"total_tokens"`
+}
+
+// SessionHeaderConfigRepository 会话标识配置数据访问接口。
+type SessionHeaderConfigRepository interface {
+	List(ctx context.Context) ([]model.SessionHeaderConfig, error)
+	Create(ctx context.Context, config *model.SessionHeaderConfig) error
+	Update(ctx context.Context, config *model.SessionHeaderConfig) error
+	Delete(ctx context.Context, id int64) error
+	GetByID(ctx context.Context, id int64) (*model.SessionHeaderConfig, error)
+	GetByKey(ctx context.Context, key string) (*model.SessionHeaderConfig, error)
+	ListEnabled(ctx context.Context) ([]model.SessionHeaderConfig, error)
+	Count(ctx context.Context, count *int64) error
 }

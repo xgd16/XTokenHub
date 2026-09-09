@@ -226,8 +226,19 @@ func TestStreamConvertToResponses(t *testing.T) {
 			t.Fatalf("缺少 response.completed (up=%s)", up)
 		}
 		resp := completed["response"].(map[string]any)
-		if resp["id"] != "resp_0" || resp["status"] != "completed" {
+		// 上游 id 透传为 response.id（anthropic 上游 message_start 无 id 时用占位 resp_0）
+		wantID := "resp_0"
+		if up == model.ProtocolChatCompletions {
+			wantID = "c1"
+		}
+		if resp["id"] != wantID || resp["status"] != "completed" {
 			t.Errorf("completed response 头部: %v", resp)
+		}
+		// 官方 SDK 严格校验的必填字段：缺失会被客户端判为非法响应
+		for _, k := range []string{"created_at", "parallel_tool_calls", "tool_choice", "tools"} {
+			if _, ok := resp[k]; !ok {
+				t.Errorf("completed response 缺必填字段 %s: %v", k, resp)
+			}
 		}
 		output := resp["output"].([]any)
 		item := output[0].(map[string]any)

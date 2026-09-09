@@ -28,12 +28,19 @@ type KeyChecker interface {
 	Check(ctx context.Context, raw string) (*model.APIKey, error)
 }
 
+// SessionHeaderSource 会话标识 Header 名单来源（由 service.SessionHeaderConfigService 实现）。
+// 返回启用中的 Header 名称（canonical 格式）；nil 时回退仅识别 X-Session-Id。
+type SessionHeaderSource interface {
+	EnabledHeaders(ctx context.Context) []string
+}
+
 // Handler 网关三端点。
 type Handler struct {
 	exec         *gateway.Executor
 	maxBodyBytes int64
 	keys         KeyChecker // 为 nil 时等同于不启用鉴权
 	keyRequired  bool       // 是否强制校验密钥（gateway.require_key）
+	sessions     SessionHeaderSource // 会话 Header 配置（nil = 仅识别 X-Session-Id）
 }
 
 // NewHandler 构造。
@@ -42,6 +49,23 @@ func NewHandler(exec *gateway.Executor, keys KeyChecker, keyRequired bool, maxBo
 		maxBodyBytes = 20 << 20
 	}
 	return &Handler{exec: exec, maxBodyBytes: maxBodyBytes, keys: keys, keyRequired: keyRequired}
+}
+
+// SetSessionHeaders 注入会话 Header 配置来源（nil 表示仅识别 X-Session-Id）。
+func (h *Handler) SetSessionHeaders(s SessionHeaderSource) { h.sessions = s }
+
+// sessionID 按配置的 Header 名单依次提取会话标识（取第一个非空值）。
+// 未注入配置来源时回退仅识别 X-Session-Id。
+func (h *Handler) sessionID(c *gin.Context) string {
+	if h.sessions == nil {
+		return c.GetHeader("X-Session-Id")
+	}
+	for _, name := range h.sessions.EnabledHeaders(c.Request.Context()) {
+		if v := strings.TrimSpace(c.GetHeader(name)); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // Register 注册网关端点（统一挂在密钥鉴权组下）。
@@ -177,7 +201,7 @@ func (h *Handler) serve(c *gin.Context, p model.Protocol) {
 		Body:         body,
 		ClientIP:     c.ClientIP(),
 		UserAgent:    c.Request.UserAgent(),
-		SessionID:    c.GetHeader("X-Session-Id"),
+		SessionID:    h.sessionID(c),
 		ClientHeader: c.Request.Header,
 	}
 	if v, ok := c.Get(ctxKeyID); ok {

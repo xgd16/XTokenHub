@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"gorm.io/gorm"
@@ -66,6 +67,9 @@ func (r *logRepo) baseQuery(ctx context.Context, f LogFilter) *gorm.DB {
 	}
 	if f.Model != "" {
 		q = q.Where("model = ?", f.Model)
+	}
+	if f.SessionID != "" {
+		q = q.Where("session_id = ?", f.SessionID)
 	}
 	if f.Stream != nil {
 		q = q.Where("stream = ?", *f.Stream)
@@ -344,4 +348,140 @@ func (r *logRepo) TrendByDayModel(ctx context.Context, since time.Time) ([]Model
 		rows = []ModelDayPoint{}
 	}
 	return rows, err
+}
+
+// sessionKeyExpr 会话分组键：有 session_id 按会话归并，否则按自身主键独立成组。
+// 与前端 groupBySession 的分组语义一致（sess:<id> / req:<id>）。
+const sessionKeyExpr = "CASE WHEN session_id <> '' THEN 'sess:' || session_id ELSE 'req:' || id END"
+
+// LiveSessions 最近活跃会话聚合：先按会话键取最近活跃的 N 组，再拉这些组的全部行
+// 在内存中汇总——统计覆盖全量历史，不因前端只保留 200 行而残缺。
+func (r *logRepo) LiveSessions(ctx context.Context, in LiveSessionsInput) ([]LiveSession, error) {
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	// 1) 取最近活跃的会话键（按组内最新请求时间倒序）。
+	// MAX(created_at) 仅用于排序，不扫描成 time.Time（聚合结果由驱动返回字符串）。
+	var keys []struct {
+		Key string `gorm:"column:skey"`
+	}
+	err := r.db.WithContext(ctx).Model(&model.RequestLog{}).
+		Select(sessionKeyExpr + " AS skey, MAX(created_at) AS last_at").
+		Group("skey").Order("last_at DESC").Limit(limit).Scan(&keys).Error
+	if err != nil {
+		return nil, fmt.Errorf("live sessions keys: %w", err)
+	}
+	if len(keys) == 0 {
+		return []LiveSession{}, nil
+	}
+
+	// 2) 拉取这些会话的全部请求行（含历史），按会话键 + 时间倒序
+	skeys := make([]string, 0, len(keys))
+	for _, k := range keys {
+		skeys = append(skeys, k.Key)
+	}
+	var rows []model.RequestLog
+	err = r.db.WithContext(ctx).Model(&model.RequestLog{}).
+		Where(sessionKeyExpr+" IN ?", skeys).
+		Order("created_at DESC, id DESC").
+		Find(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("live sessions rows: %w", err)
+	}
+
+	// 3) 内存聚合，保持 keys 的活跃顺序；时间边界由实际行计算。
+	// rows 已按 created_at DESC 排序，每个键首次出现的行即组内最新行。
+	byKey := make(map[string]*LiveSession, len(keys))
+	for i := range keys {
+		byKey[keys[i].Key] = &LiveSession{
+			Key:       keys[i].Key,
+			Models:    []string{},
+			Channels:  []string{},
+			Protocols: []string{},
+			Modes:     []string{},
+		}
+	}
+	latest := make(map[string]*model.RequestLog, len(keys))
+	for i := range rows {
+		row := &rows[i]
+		key := "req:" + strconv.FormatInt(row.ID, 10)
+		if row.SessionID != "" {
+			key = "sess:" + row.SessionID
+		}
+		g := byKey[key]
+		if g == nil {
+			continue
+		}
+		if latest[key] == nil {
+			latest[key] = row
+		}
+		if g.SessionID == "" && row.SessionID != "" {
+			g.SessionID = row.SessionID
+		}
+		g.Requests++
+		g.PromptTokens += row.PromptTokens
+		g.CompletionTokens += row.CompletionTokens
+		// 与 executor.finish 口径一致：total 缺失时回退为 prompt+completion
+		g.TotalTokens += rowTotalTokens(row)
+		g.CachedTokens += row.CachedTokens
+		g.TotalMS += row.DurationMS
+		if row.Error != "" {
+			g.Errors++
+		}
+		if row.CreatedAt.Before(g.FirstAt) || g.FirstAt.IsZero() {
+			g.FirstAt = row.CreatedAt
+		}
+		if row.CreatedAt.After(g.LastAt) {
+			g.LastAt = row.CreatedAt
+		}
+		if g.UserAgent == "" && row.UserAgent != "" {
+			g.UserAgent = row.UserAgent
+		}
+		if g.KeyName == "" && row.KeyName != "" {
+			g.KeyName = row.KeyName
+		}
+		g.Models = appendUnique(g.Models, row.Model)
+		g.Channels = appendUnique(g.Channels, row.ChannelName)
+		g.Protocols = appendUnique(g.Protocols, string(row.Protocol))
+		g.Modes = appendUnique(g.Modes, string(row.ForwardMode))
+	}
+
+	out := make([]LiveSession, 0, len(keys))
+	for i := range keys {
+		g := byKey[keys[i].Key]
+		if g == nil {
+			continue
+		}
+		// 散行（单次请求）直接带上整行，前端无需再查即可展示状态/明细/请求头
+		if g.Requests == 1 {
+			g.LastRequest = latest[keys[i].Key]
+		}
+		out = append(out, *g)
+	}
+	return out, nil
+}
+
+// rowTotalTokens 单行总 token：落库值优先，缺失时回退为 prompt+completion。
+func rowTotalTokens(r *model.RequestLog) int64 {
+	if r.TotalTokens > 0 {
+		return r.TotalTokens
+	}
+	return r.PromptTokens + r.CompletionTokens
+}
+
+// appendUnique 去重追加（保持首次出现顺序）。
+func appendUnique(list []string, v string) []string {	if v == "" {
+		return list
+	}
+	for _, x := range list {
+		if x == v {
+			return list
+		}
+	}
+	return append(list, v)
 }

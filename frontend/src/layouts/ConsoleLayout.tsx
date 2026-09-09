@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { Suspense, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { Button, Drawer, Layout, Menu, Tooltip } from 'antd'
+import { Button, Drawer, Layout, Menu, Spin, Tooltip } from 'antd'
 import {
   DashboardOutlined,
   ClusterOutlined,
@@ -12,6 +12,7 @@ import {
   MenuOutlined,
   MoonOutlined,
   SunOutlined,
+  SettingOutlined,
 } from '@ant-design/icons'
 import { useLocation, useNavigate, useOutlet } from 'react-router'
 import { AnimatePresence, motion } from 'motion/react'
@@ -29,6 +30,7 @@ const MENU = [
   { key: '/custom-models', icon: <AppstoreOutlined />, label: '自定义模型' },
   { key: '/keys', icon: <KeyOutlined />, label: 'API Keys' },
   { key: '/logs', icon: <FileTextOutlined />, label: '请求日志' },
+  { key: '/settings', icon: <SettingOutlined />, label: '配置管理' },
 ]
 
 /** 品牌字标（桌面侧栏 / 移动端顶栏与抽屉共用）。 */
@@ -117,7 +119,8 @@ function AuroraBg() {
   )
 }
 
-/** 页面切换：路由变化时旧页淡出、新页上浮淡入（keyed by pathname）。 */
+/** 页面切换：路由变化时旧页淡出、新页上浮淡入（keyed by pathname）。
+ *  Suspense 放在内容区内部：懒加载页面下载期间侧栏/顶栏保持可见，只让内容区显示兜底。 */
 function PageTransition() {
   const location = useLocation()
   const outlet = useOutlet()
@@ -130,7 +133,15 @@ function PageTransition() {
         exit={{ opacity: 0, y: -8 }}
         transition={{ duration: 0.3, ease: easeOutExpo }}
       >
-        {outlet}
+        <Suspense
+          fallback={
+            <div style={{ display: 'flex', justifyContent: 'center', padding: '80px 0' }}>
+              <Spin />
+            </div>
+          }
+        >
+          {outlet}
+        </Suspense>
       </motion.div>
     </AnimatePresence>
   )

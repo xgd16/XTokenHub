@@ -192,6 +192,7 @@ func TestAdminStatsEndpoints(t *testing.T) {
 		"/api/v1/stats/trend?days=7",
 		"/api/v1/stats/by-model?hours=24",
 		"/api/v1/stats/by-channel?hours=24",
+		"/api/v1/stats/live-sessions?limit=20",
 		"/api/v1/logs?page=1&per_page=10",
 	} {
 		code, env, _ := doJSON(t, srv, "GET", path, nil)
@@ -232,6 +233,54 @@ func TestGatewayEndpointsValidation(t *testing.T) {
 	items := env["data"].(map[string]any)["items"].([]any)
 	if len(items) != 1 {
 		t.Errorf("无渠道请求应记录日志: %d", len(items))
+	}
+}
+
+// TestLiveSessionsEndpointContract 校验会话聚合接口的 JSON 字段与前端类型一致，
+// 且带 session_id 的请求被合并为一行、合计覆盖全部请求。
+func TestLiveSessionsEndpointContract(t *testing.T) {
+	_, srv := newTestEnv(t)
+
+	// 通过网关发起 3 次同会话请求（无渠道 -> 503，但日志照常落库）
+	for i := 0; i < 3; i++ {
+		req, _ := http.NewRequest("POST", srv.URL+"/v1/chat/completions",
+			strings.NewReader(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Session-Id", "sess-contract")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+	}
+
+	_, env, raw := doJSON(t, srv, "GET", "/api/v1/stats/live-sessions?limit=20", nil)
+	if env["code"] != float64(0) {
+		t.Fatalf("接口失败: %s", raw)
+	}
+	items, ok := env["data"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("应返回 1 个会话组, got %s", raw)
+	}
+	g := items[0].(map[string]any)
+	// 前端 LiveSession 契约字段
+	for _, k := range []string{
+		"key", "session_id", "requests", "prompt_tokens", "completion_tokens",
+		"total_tokens", "cached_tokens", "total_ms", "errors",
+		"first_at", "last_at", "user_agent", "key_name", "models", "channels", "protocols", "modes",
+	} {
+		if _, ok := g[k]; !ok {
+			t.Errorf("响应缺少字段 %q: %s", k, raw)
+		}
+	}
+	if g["session_id"] != "sess-contract" {
+		t.Errorf("session_id = %v, want sess-contract", g["session_id"])
+	}
+	if g["requests"] != float64(3) {
+		t.Errorf("requests = %v, want 3（同会话合并）", g["requests"])
+	}
+	if g["key"] != "sess:sess-contract" {
+		t.Errorf("key = %v, want sess:sess-contract", g["key"])
 	}
 }
 

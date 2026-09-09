@@ -297,6 +297,18 @@ func (h *StatsHandler) TrendByModel(c *gin.Context) {
 	resp.OK(c, items)
 }
 
+// LiveSessions GET /api/v1/stats/live-sessions?limit=20 —— 最近活跃会话聚合。
+// 会话合计覆盖全量历史，前端只保留最近若干组，避免长会话被窗口截断后统计残缺。
+func (h *StatsHandler) LiveSessions(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	items, err := h.svc.LiveSessions(c.Request.Context(), limit)
+	if err != nil {
+		resp.Fail(c, err)
+		return
+	}
+	resp.OK(c, items)
+}
+
 // ModelHandler 模型目录与用量接口。
 type ModelHandler struct {
 	svc *service.ModelService

@@ -279,14 +279,18 @@ func withModel(body []byte, name string) []byte {
 // 返回 error 仅表示"可 failover 的失败"；完成回写（含错误回传）返回 nil。
 func (e *Executor) handleNonStream(ctx context.Context, w http.ResponseWriter, req *Request, cand Candidate, log *model.RequestLog, start time.Time) error {
 	ch := cand.Channel
-	up := upstreamProtoFor(ch)
+	up := upstreamProtoFor(ch, req.Protocol)
+	if cand.Mode == model.ForwardNativePassthrough {
+		// 透传：上游协议 = 入站协议（端点/请求体/响应解析一致）
+		up = req.Protocol
+	}
 	upModel := upstreamModelOf(cand, req)
 
 	var upstreamBody []byte
 	var err error
 	if cand.Mode == model.ForwardNativePassthrough {
 		var status int
-		upstreamBody, status, err = e.sendNonStream(ctx, ch, req.Protocol, withModel(req.Body, upModel), req.ClientHeader)
+		upstreamBody, status, err = e.sendNonStream(ctx, ch, up, withModel(req.Body, upModel), req.ClientHeader)
 		log.UpstreamStatus = status
 	} else {
 		var convBody []byte
@@ -322,10 +326,17 @@ func (e *Executor) handleNonStream(ctx context.Context, w http.ResponseWriter, r
 		log.CacheWriteTokens = usage.CacheWriteTokens
 		log.TotalTokens = usage.TotalTokens
 	} else {
-		// 上游未报告：本地估算（completion 尝试从响应文本提取）
+		// 上游未报告：本地估算（completion 尝试从响应文本/工具调用参数提取）
 		est := e.estimateUsage(req, nil)
-		if res, perr := provider.ParseUpstreamResponse(up, upstreamBody); perr == nil && res.Text != "" {
-			est.CompletionTokens = provider.EstimateTokens(res.Text)
+		if res, perr := provider.ParseUpstreamResponse(up, upstreamBody); perr == nil {
+			if res.Text == "" {
+				for _, tc := range res.ToolCalls {
+					res.Text += tc.Arguments
+				}
+			}
+			if res.Text != "" {
+				est.CompletionTokens = provider.EstimateTokens(res.Text)
+			}
 		}
 		applyUsage(log, est)
 	}
@@ -333,20 +344,24 @@ func (e *Executor) handleNonStream(ctx context.Context, w http.ResponseWriter, r
 		e.throughput.Add(log.CompletionTokens)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(log.UpstreamStatus)
-	if cand.Mode == model.ForwardNativePassthrough {
-		_, _ = w.Write(upstreamBody)
-	} else {
-		clientBody, _, cerr := provider.ConvertResponse(req.Protocol, up, upstreamBody, req.Params.Model)
+	// 转换路径先构造客户端响应体：转换失败须在写出响应头之前返回，
+	// 否则 WriteHeader 已提交，客户端只能收到 200 + 残缺内容。
+	clientBody := upstreamBody
+	if cand.Mode != model.ForwardNativePassthrough {
+		converted, _, cerr := provider.ConvertResponse(req.Protocol, up, upstreamBody, req.Params.Model)
 		if cerr != nil {
 			log.Error = truncate("响应转换失败: "+cerr.Error(), 900)
+			log.DurationMS = time.Since(start).Milliseconds()
 			e.finish(ctx, log)
 			writeJSONError(w, http.StatusBadGateway, req.Protocol, log.Error)
 			return nil
 		}
-		_, _ = w.Write(clientBody)
+		clientBody = converted
 	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(log.UpstreamStatus)
+	_, _ = w.Write(clientBody)
 	e.finish(ctx, log)
 	return nil
 }
@@ -355,7 +370,12 @@ func (e *Executor) handleNonStream(ctx context.Context, w http.ResponseWriter, r
 // 返回 error 仅表示"写出前的失败（可 failover）"；一旦开始写出，内部自行收尾。
 func (e *Executor) handleStream(ctx context.Context, w http.ResponseWriter, req *Request, cand Candidate, log *model.RequestLog, start time.Time) error {
 	ch := cand.Channel
-	up := upstreamProtoFor(ch)
+	up := upstreamProtoFor(ch, req.Protocol)
+	if cand.Mode == model.ForwardNativePassthrough {
+		// 透传：上游协议 = 入站协议。否则 openai 兼容渠道会被恒定为 chat_completions，
+		// 导致 responses 请求体被发到 /v1/chat/completions（上游按 chat schema 解析报错）。
+		up = req.Protocol
+	}
 	upModel := upstreamModelOf(cand, req)
 
 	var upstreamBody []byte
@@ -419,18 +439,19 @@ func (e *Executor) handleStream(ctx context.Context, w http.ResponseWriter, req 
 		sid = e.throughput.StreamBegin()
 		defer func() {
 			if e.throughput != nil && sid != 0 {
-				e.throughput.StreamUpdate(sid, finalCompletion)
-				e.throughput.StreamEnd(sid)
+				// 用最终精确值校准估算上报（可向下修正）
+				e.throughput.StreamFinish(sid, finalCompletion)
 			}
 		}()
 	}
 
-	// 当前累计输出文本获取函数（透传走 parser，转换走 converter）。
+	// 当前累计输出文本获取函数（透传走 parser，转换走 converter；
+	// 工具调用参数一并计入估算）。
 	var textFn func() string
 	if converter != nil {
-		textFn = converter.Text
+		textFn = func() string { return converter.Text() + converter.ArgsText() }
 	} else if parser != nil {
-		textFn = parser.Text
+		textFn = func() string { return parser.Text() + parser.ArgsText() }
 	}
 
 	// SSE 分割：透传模式旁路解析；转换模式同时产出客户端事件
@@ -442,7 +463,7 @@ func (e *Executor) handleStream(ctx context.Context, w http.ResponseWriter, req 
 			chunks, ferr := converter.Feed(data)
 			if ferr == nil {
 				for _, chunk := range chunks {
-					writeSSEData(w, flusher, chunk)
+					writeSSEEvent(w, flusher, chunk, req.Protocol)
 				}
 			}
 		}
@@ -491,7 +512,7 @@ func (e *Executor) handleStream(ctx context.Context, w http.ResponseWriter, req 
 		done, u := converter.Finalize()
 		if !clientBroken {
 			for _, chunk := range done {
-				writeSSEData(w, flusher, chunk)
+				writeSSEEvent(w, flusher, chunk, req.Protocol)
 			}
 		}
 		usage, usageOK = u, true
@@ -500,6 +521,13 @@ func (e *Executor) handleStream(ctx context.Context, w http.ResponseWriter, req 
 	}
 	if usageOK || (usage.PromptTokens > 0 || usage.CompletionTokens > 0) {
 		applyUsage(log, usage)
+	} else if converter != nil {
+		// 转换模式：completion 估算须基于转换器累积文本（parser 此时为 nil）
+		est := provider.Usage{Source: provider.UsageFromEstimate, CompletionTokens: provider.EstimateTokens(converter.Text())}
+		if req.Conv != nil {
+			est.PromptTokens = provider.EstimateTokens(req.Conv.FullText())
+		}
+		applyUsage(log, est.Normalize())
 	} else {
 		applyUsage(log, e.estimateUsage(req, parser))
 	}
@@ -549,7 +577,7 @@ func (e *Executor) estimateUsage(req *Request, parser provider.StreamUsageParser
 		u.PromptTokens = provider.EstimateTokens(req.Conv.FullText())
 	}
 	if parser != nil {
-		u.CompletionTokens = provider.EstimateTokens(parser.Text())
+		u.CompletionTokens = provider.EstimateTokens(parser.Text() + parser.ArgsText())
 	}
 	return u.Normalize()
 }
@@ -588,8 +616,20 @@ func (e *Executor) finish(ctx context.Context, log *model.RequestLog) {
 	}
 }
 
-// upstreamProtoFor 渠道转换路径的上游协议。
-func upstreamProtoFor(ch *model.Channel) model.Protocol {
+// upstreamProtoFor 转换路径的上游协议：优先取渠道已声明且不同于入站的协议
+// （chat 转换支持最完整 -> messages -> responses），未探测的渠道回退厂家默认。
+// 例：仅声明 responses 的渠道被 chat/messages 客户端选中时返回 responses，
+// 由 WriteUpstreamRequest 给出"不支持 responses 上游"的明确错误。
+func upstreamProtoFor(ch *model.Channel, inbound model.Protocol) model.Protocol {
+	if len(ch.NativeProtocols()) > 0 {
+		for _, p := range []model.Protocol{
+			model.ProtocolChatCompletions, model.ProtocolMessages, model.ProtocolResponses,
+		} {
+			if p != inbound && ch.IsNative(p) {
+				return p
+			}
+		}
+	}
 	if ch.Provider == model.ProviderAnthropic {
 		return model.ProtocolMessages
 	}
@@ -613,6 +653,22 @@ func writeSSEData(w http.ResponseWriter, flusher http.Flusher, payload []byte) {
 	if _, err := w.Write(append(append([]byte("data: "), payload...), '\n', '\n')); err == nil && flusher != nil {
 		flusher.Flush()
 	}
+}
+
+// writeSSEEvent 写出转换后的 data 载荷。messages / responses 协议的官方事件流
+// 每条都带 event: 行（事件名 = 载荷 type），部分客户端按事件名分发；chat 协议无事件名。
+func writeSSEEvent(w http.ResponseWriter, flusher http.Flusher, payload []byte, in model.Protocol) {
+	if in == model.ProtocolMessages || in == model.ProtocolResponses {
+		var head struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(payload, &head) == nil && head.Type != "" {
+			if _, err := w.Write([]byte("event: " + head.Type + "\n")); err != nil {
+				return
+			}
+		}
+	}
+	writeSSEData(w, flusher, payload)
 }
 
 func writeJSONError(w http.ResponseWriter, status int, in model.Protocol, msg string) {

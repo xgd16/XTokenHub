@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { lazy, useEffect, useMemo } from 'react'
 import { App as AntdApp, ConfigProvider, theme } from 'antd'
 import type { ThemeConfig } from 'antd'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router'
@@ -7,15 +7,18 @@ import zhCN from 'antd/locale/zh_CN'
 import dayjs from 'dayjs'
 import 'dayjs/locale/zh-cn'
 import ConsoleLayout from './layouts/ConsoleLayout'
-import Dashboard from './pages/Dashboard'
-import Channels from './pages/Channels'
-import Models from './pages/Models'
-import CustomModels from './pages/CustomModels'
-import Keys from './pages/Keys'
-import RequestLogs from './pages/RequestLogs'
 import { initWS } from './api/ws'
 import { useThemeMode, type ThemeMode } from './theme'
 import './styles/global.css'
+
+// 路由级懒加载：首屏只加载仪表盘，其余页面按访问拆分，避免单包 1.3MB 全量下载。
+const Dashboard = lazy(() => import('./pages/Dashboard'))
+const Channels = lazy(() => import('./pages/Channels'))
+const Models = lazy(() => import('./pages/Models'))
+const CustomModels = lazy(() => import('./pages/CustomModels'))
+const Keys = lazy(() => import('./pages/Keys'))
+const RequestLogs = lazy(() => import('./pages/RequestLogs'))
+const Settings = lazy(() => import('./pages/Settings'))
 
 dayjs.locale('zh-cn')
 
@@ -79,6 +82,7 @@ export default function App() {
                 <Route path="/custom-models" element={<CustomModels />} />
                 <Route path="/keys" element={<Keys />} />
                 <Route path="/logs" element={<RequestLogs />} />
+                <Route path="/settings" element={<Settings />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Route>
             </Routes>

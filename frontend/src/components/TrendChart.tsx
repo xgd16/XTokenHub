@@ -100,7 +100,9 @@ export default function TrendChart({ data, height = 230, ariaLabel = '请求趋�
     const n = data.length
     const iw = CHART_W - 46 - 20
     const i = Math.round(((vx - 46) / iw) * (n - 1))
-    setHoverIdx(Math.max(0, Math.min(n - 1, i)))
+    const next = Math.max(0, Math.min(n - 1, i))
+    // mousemove 可达上百次/秒：同一桶内移动时保持原引用，避免整张 SVG 无谓重渲染
+    setHoverIdx((prev) => (prev === next ? prev : next))
   }
 
   if (geo.empty) {

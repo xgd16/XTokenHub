@@ -1,4 +1,5 @@
 import { request } from './http'
+import type { RequestLog } from './log'
 
 export interface Summary {
   total_requests: number
@@ -60,6 +61,33 @@ export const statsApi = {
     request<GroupStat[]>({ url: '/api/v1/stats/by-model', method: 'GET', params: since ? { hours, since } : { hours } }),
   byChannel: (hours = 24) => request<GroupStat[]>({ url: '/api/v1/stats/by-channel', method: 'GET', params: { hours } }),
   byKey: (hours = 24) => request<GroupStat[]>({ url: '/api/v1/stats/by-key', method: 'GET', params: { hours } }),
+  /** 最近活跃会话聚合：会话合计由后端基于全量历史计算，不受前端窗口截断。 */
+  liveSessions: (limit = 20) =>
+    request<LiveSession[]>({ url: '/api/v1/stats/live-sessions', method: 'GET', params: { limit } }),
+}
+
+/** 会话聚合视图（后端按 session_id 全量统计；无 session_id 的散行各自成组）。 */
+export interface LiveSession {
+  key: string
+  session_id: string
+  requests: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  cached_tokens: number
+  total_ms: number
+  errors: number
+  first_at: string
+  last_at: string
+  user_agent: string
+  key_name: string
+  models: string[]
+  channels: string[]
+  protocols: string[]
+  /** 转发模式去重（native_passthrough / converted）。 */
+  modes: string[]
+  /** 组内最新请求整行：仅散行（requests=1）返回，供直接展示状态/明细/请求头。 */
+  last_request?: RequestLog
 }
 
 /** 模型目录与用量：全部模型 + 多时间窗使用量。 */

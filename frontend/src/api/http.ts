@@ -16,8 +16,14 @@ export const http = axios.create({
 http.interceptors.response.use(
   (resp) => resp,
   (error) => {
-    if (error.response) {
-      return Promise.reject(error)
+    // 后端业务失败以 HTTP 4xx/5xx + {code,message} 返回，这里提取 message，
+    // 否则页面只能拿到 axios 的 "Request failed with status code 400" 兜底文案。
+    const body = error?.response?.data as { message?: unknown } | undefined
+    if (body && typeof body.message === 'string' && body.message) {
+      return Promise.reject(new Error(body.message))
+    }
+    if (error?.response) {
+      return Promise.reject(new Error(`请求失败（HTTP ${error.response.status}）`))
     }
     return Promise.reject(new Error('网络异常，请检查后端服务'))
   },

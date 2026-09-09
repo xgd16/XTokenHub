@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { App, Button, Empty, Input, Space, Spin, Switch, Tooltip, Typography } from 'antd'
 import { CopyOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { modelsApi, type ModelUsage, type ModelWindow } from '../api/stats'
@@ -9,7 +9,7 @@ import { copyText } from '../utils/clipboard'
 const { Text } = Typography
 
 /** 单张模型用量卡片：模型名（点击复制）+ 1h/24h/7d/30d 四个窗口的请求与 token。 */
-function ModelCard({ m }: { m: ModelUsage }) {
+const ModelCard = memo(function ModelCard({ m }: { m: ModelUsage }) {
   const { message } = App.useApp()
   const copyName = async () => {
     const ok = await copyText(m.model)
@@ -59,7 +59,7 @@ function ModelCard({ m }: { m: ModelUsage }) {
       </div>
     </div>
   )
-}
+})
 
 /** 模型用量页：全部模型卡片 + 1h/24h/7d/30d 使用量。 */
 export default function Models() {

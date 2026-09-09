@@ -48,7 +48,13 @@ func Open(cfg *config.DatabaseConfig) (*gorm.DB, error) {
 
 // Migrate 自动迁移全部业务表。
 func Migrate(db *gorm.DB) error {
-	if err := db.AutoMigrate(&model.Channel{}, &model.APIKey{}, &model.RequestLog{}, &model.CustomModel{}); err != nil {
+	if err := db.AutoMigrate(
+		&model.Channel{},
+		&model.APIKey{},
+		&model.RequestLog{},
+		&model.CustomModel{},
+		&model.SessionHeaderConfig{},
+	); err != nil {
 		return fmt.Errorf("AutoMigrate: %w", err)
 	}
 	return nil

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type Key } from 'react'
 import type { TableColumnsType } from 'antd'
 import { Button, Card, Col, Drawer, Row, Segmented, Table, Tag, Tooltip, Typography } from 'antd'
 import { LoadingOutlined } from '@ant-design/icons'
@@ -16,6 +16,7 @@ import {
   todaySince,
   type GroupStat,
   type Lifetime,
+  type LiveSession,
   type ModelDayPoint,
   type Summary,
   type TrendBucket,
@@ -24,7 +25,7 @@ import {
 import { logApi, type RequestLog } from '../api/log'
 import { WS_EVENTS, useWsEvent, useWsReconnected } from '../api/ws'
 import { agentShort, compactCN, compactNumber, duration, durationLong, fullTime, hitRateColor, percent, protocolShort, timeOf, tokenSpeed } from '../utils/format'
-import { groupBySession, toBucketSeries, toDonut, toHeatmap, toModelRank, toModelTrend, toStatCards, toTrendSeries, type HeatMode, type ModelRank, type SessionGroup } from '../utils/transform'
+import { mergeLiveEvents, mergeSessionViews, toBucketSeries, toDonut, toHeatmap, toModelRank, toModelTrend, toStatCards, toTrendSeries, type HeatMode, type LivePhase, type ModelRank, type SessionGroup } from '../utils/transform'
 import { useIsMobile } from '../utils/useIsMobile'
 import { useChartPalette } from '../theme'
 
@@ -35,14 +36,32 @@ const pct = (n: number) => `${Math.round(n * 10) / 10}%`
 /** 连续天数格式化。 */
 const streak = (n: number) => `${n} 天`
 
-/** 实时流容量：初始拉取与 WS 累积上限（足量行支撑按会话合并）。 */
-const LIVE_FEED_MAX = 30
+/**
+ * 实时流容量：仅用于「尚未落库」的进行中行缓冲（后端已提供全量会话合计，
+ * 前端不再靠自留窗口做聚合）。裁剪按会话整组移除，见 trimLiveRows。
+ */
+const LIVE_FEED_MAX = 200
+
+/** 展示的会话组数上限：只保留最近 N 个活跃会话，合计口径由后端保证。 */
+const LIVE_GROUP_MAX = 20
+
+/** 会话展开明细条数上限：只拉最近 N 条，合计仍为后端全量口径。 */
+const LIVE_DETAIL_MAX = 20
+
+/** 会话视图刷新节流：突发流量下避免每个请求都打一次接口。 */
+const LIVE_SESSIONS_THROTTLE_MS = 2000
+
+/**
+ * 实时事件合流窗口：同一窗口内的 started/completed 合并为一次 setState。
+ * 突发流量下避免「每条事件一次全表重渲染」，同时保持 ≤120ms 的感知延迟。
+ */
+const LIVE_FLUSH_MS = 120
 
 /** 进行中请求：实时推送来的行尚未落库（无 id），完成事件按 req_id 原位替换。 */
 const isPending = (r: RequestLog) => !r.id && !!r.req_id
 
 /** 移动端保留的列 key，其余列收进展开行（外层会话行 / 内层请求行各一套）。 */
-const MOBILE_SESSION_KEYS = new Set(['time', 'session', 'model', 'client', 'tokens', 'status', 'actions'])
+const MOBILE_SESSION_KEYS = new Set(['time', 'session', 'protocol', 'mode', 'model', 'client', 'tokens', 'status', 'actions'])
 const MOBILE_REQUEST_KEYS = new Set(['time', 'model', 'client', 'tokens', 'status', 'actions'])
 
 /** 趋势图时间范围。 */
@@ -55,7 +74,7 @@ const TREND_RANGES: { key: TrendRangeKey; label: string; hours: number; bucket: 
 ]
 
 /** 统计卡片：数字驱动 + 弹簧滚动；value 为 null 显示占位。 */
-function StatCard(props: {
+const StatCard = memo(function StatCard(props: {
   label: string
   value: number | null
   format?: (n: number) => string
@@ -84,10 +103,25 @@ function StatCard(props: {
       {sub && <div style={{ fontSize: 12, color: 'var(--text-faint)', marginTop: 4 }}>{sub}</div>}
     </div>
   )
-}
+})
+
+/** 实时输出吞吐标签：自行订阅 2Hz 吞吐事件，把高频刷新限制在这一个文本节点内，
+ *  不再牵动表格 / 图表 / 卡片（此前它作为 Dashboard 状态会导致整页每秒多次重渲染）。 */
+const ThroughputTicker = memo(function ThroughputTicker() {
+  const [tps, setTps] = useState(0)
+  useWsEvent(WS_EVENTS.throughput, (msg) => {
+    const p = msg.payload as { tokens_per_sec?: number }
+    setTps(Number.isFinite(p?.tokens_per_sec) ? p.tokens_per_sec! : 0)
+  })
+  return (
+    <span className="mono" style={{ fontSize: 12, color: 'var(--text-faint)' }}>
+      实时输出 <span style={{ color: 'var(--accent)' }}>{compactCN(Math.round(tps))}</span> tok/s
+    </span>
+  )
+})
 
 /** 通用 TOP 条形列表（模型 TOP / 调用方 TOP 共用）。 */
-function UsageBars({ rows }: { rows: ModelRank[] }) {
+const UsageBars = memo(function UsageBars({ rows }: { rows: ModelRank[] }) {
   const max = Math.max(...rows.map((x) => x.requests), 1)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -120,7 +154,7 @@ function UsageBars({ rows }: { rows: ModelRank[] }) {
       )}
     </div>
   )
-}
+})
 
 /** 请求级列：会话展开后的明细表（即旧版单行视图的列）。 */
 function requestColumns(isMobile: boolean, onHeaders: (r: RequestLog) => void): TableColumnsType<RequestLog> {
@@ -262,14 +296,18 @@ function requestColumns(isMobile: boolean, onHeaders: (r: RequestLog) => void): 
 
 /** 会话聚合列：外层每行 = 一个调用方会话（或无会话标识的单次请求）。 */
 function sessionColumns(isMobile: boolean, onHeaders: (r: RequestLog) => void): TableColumnsType<SessionGroup> {
+  // 单次请求且明细已就位（散行 / 进行中的新会话）时才展示行级字段
+  const singleOf = (g: SessionGroup): RequestLog | null =>
+    g.count === 1 && g.requests.length === 1 ? g.requests[0] : null
   return ([
     {
       key: 'time',
       title: '时间',
       width: isMobile ? 90 : 110,
       render: (_, g) => {
-        const t = <span className="mono" style={{ color: 'var(--text-faint)' }}>{g.firstAt ? timeOf(g.firstAt) : ''}</span>
-        return g.requests.length > 1 ? (
+        // 列表按最近活跃排序，故展示组内最新请求时间；悬停看首末范围
+        const t = <span className="mono" style={{ color: 'var(--text-faint)' }}>{g.lastAt ? timeOf(g.lastAt) : ''}</span>
+        return g.count > 1 ? (
           <Tooltip title={<span className="mono" style={{ fontSize: 12 }}>{fullTime(g.firstAt)} ~ {fullTime(g.lastAt)}</span>}>{t}</Tooltip>
         ) : t
       },
@@ -286,10 +324,45 @@ function sessionColumns(isMobile: boolean, onHeaders: (r: RequestLog) => void): 
           <Tooltip title={<span className="mono" style={{ fontSize: 12 }}>{g.sessionId}</span>}>
             <span className="mono" style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6 }}>
               <span>{g.sessionId.slice(0, 8)}</span>
-              <span style={{ fontSize: 11, color: 'var(--accent)' }}>×{g.requests.length}</span>
+              <span style={{ fontSize: 11, color: 'var(--accent)' }}>×{g.count}</span>
             </span>
           </Tooltip>
         ),
+    },
+    {
+      key: 'protocol',
+      title: '协议',
+      width: 110,
+      render: (_, g) => {
+        const v = g.protocols.map(protocolShort).join('、') || '—'
+        return (
+          <Tooltip title={v}>
+            <Tag color="cyan" style={{ background: 'transparent' }}>{v}</Tag>
+          </Tooltip>
+        )
+      },
+    },
+    {
+      key: 'mode',
+      title: '模式',
+      width: 90,
+      render: (_, g) => {
+        if (g.modes.length === 0) return <span style={{ color: 'var(--text-faint)' }}>—</span>
+        const passthrough = g.modes.includes('native_passthrough')
+        const converted = g.modes.includes('converted')
+        const label = passthrough && converted ? '透传、转换' : passthrough ? '透传' : '转换'
+        return (
+          <Tag
+            style={{
+              background: 'transparent',
+              color: converted && !passthrough ? 'var(--amber)' : 'var(--accent)',
+              borderColor: converted && !passthrough ? 'var(--amber)' : 'var(--accent)',
+            }}
+          >
+            {label}
+          </Tag>
+        )
+      },
     },
     {
       key: 'model',
@@ -321,8 +394,9 @@ function sessionColumns(isMobile: boolean, onHeaders: (r: RequestLog) => void): 
       key: 'tokens',
       title: 'Tokens',
       width: 170,
-      render: (_, g) =>
-        g.requests.length === 1 && isPending(g.requests[0]) ? (
+      render: (_, g) => {
+        const r = singleOf(g)
+        return r && isPending(r) ? (
           <span style={{ color: 'var(--text-faint)' }}>—</span>
         ) : (
           <Tooltip title={`total ${compactCN(g.totalTokens)} · prompt ${compactCN(g.promptTokens)} · 输出 ${compactCN(g.completionTokens)}`}>
@@ -331,14 +405,16 @@ function sessionColumns(isMobile: boolean, onHeaders: (r: RequestLog) => void): 
               <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>出{compactCN(g.completionTokens)}</span>
             </div>
           </Tooltip>
-        ),
+        )
+      },
     },
     {
       key: 'cache',
       title: '缓存命中',
       width: 160,
       render: (_, g) => {
-        if (g.requests.length === 1 && isPending(g.requests[0])) return <span style={{ color: 'var(--text-faint)' }}>—</span>
+        const r = singleOf(g)
+        if (r && isPending(r)) return <span style={{ color: 'var(--text-faint)' }}>—</span>
         const rate = g.promptTokens > 0 ? g.cachedTokens / g.promptTokens : 0
         const pct = Math.max(0, Math.min(1, rate)) * 100
         return (
@@ -377,12 +453,12 @@ function sessionColumns(isMobile: boolean, onHeaders: (r: RequestLog) => void): 
       title: '耗时',
       width: 90,
       render: (_, g) => {
-        if (g.requests.length === 1) {
-          const r = g.requests[0]
+        const r = singleOf(g)
+        if (r) {
           return isPending(r) ? <LiveDuration from={r.created_at} /> : <span className="mono">{duration(r.duration_ms)}</span>
         }
         return (
-          <Tooltip title={<span className="mono" style={{ fontSize: 12 }}>合计 {duration(g.totalMs)} · 平均 {duration(Math.round(g.totalMs / g.requests.length))}</span>}>
+          <Tooltip title={<span className="mono" style={{ fontSize: 12 }}>合计 {duration(g.totalMs)} · 平均 {duration(Math.round(g.totalMs / g.count))}</span>}>
             <span className="mono">{duration(g.totalMs)}</span>
           </Tooltip>
         )
@@ -393,7 +469,8 @@ function sessionColumns(isMobile: boolean, onHeaders: (r: RequestLog) => void): 
       title: '输出速度',
       width: 110,
       render: (_, g) => {
-        if (g.requests.length === 1 && isPending(g.requests[0])) return <span style={{ color: 'var(--text-faint)' }}>—</span>
+        const r = singleOf(g)
+        if (r && isPending(r)) return <span style={{ color: 'var(--text-faint)' }}>—</span>
         return <span className="mono" style={{ color: 'var(--text-secondary)' }}>{tokenSpeed(g.completionTokens, g.totalMs)}</span>
       },
     },
@@ -405,8 +482,8 @@ function sessionColumns(isMobile: boolean, onHeaders: (r: RequestLog) => void): 
         if (g.running > 0) {
           return <Tag icon={<LoadingOutlined spin />} color="processing" style={{ background: 'transparent' }}>运行中</Tag>
         }
-        if (g.requests.length === 1) {
-          const r = g.requests[0]
+        const r = singleOf(g)
+        if (r) {
           if (r.error) {
             return (
               <Tooltip title={r.error}>
@@ -418,43 +495,127 @@ function sessionColumns(isMobile: boolean, onHeaders: (r: RequestLog) => void): 
         }
         if (g.errors > 0) {
           return (
-            <Tooltip title={`${g.errors} / ${g.requests.length} 次失败`}>
+            <Tooltip title={`${g.errors} / ${g.count} 次失败`}>
               <Tag color="error" style={{ background: 'transparent' }}>{g.errors} 错</Tag>
             </Tooltip>
           )
         }
-        return <Tag color="success" style={{ background: 'transparent' }}>{g.requests.length} 次</Tag>
+        return <Tag color="success" style={{ background: 'transparent' }}>{g.count} 次</Tag>
       },
     },
     {
       key: 'actions',
       title: '操作',
       width: 80,
-      render: (_, g) =>
-        g.requests.length === 1 ? (
-          <Button size="small" type="text" onClick={() => onHeaders(g.requests[0])}>
+      render: (_, g) => {
+        const r = singleOf(g)
+        return r ? (
+          <Button size="small" type="text" onClick={() => onHeaders(r)}>
             查看头
           </Button>
-        ) : null,
+        ) : null
+      },
     },
   ] as TableColumnsType<SessionGroup>).filter((c) => !isMobile || MOBILE_SESSION_KEYS.has(String(c.key)))
 }
 
-/** 会话组展开内容：该会话内的请求级明细。 */
-function SessionDetail(props: { g: SessionGroup; isMobile: boolean; onHeaders: (r: RequestLog) => void }) {
-  const { g, isMobile, onHeaders } = props
+/** 会话组展开内容：明细按需拉取最近 LIVE_DETAIL_MAX 条（后端聚合行不含全量行，
+ *  展开时按 session_id 查询）；合计仍是全量口径，明细少于总数时给出提示。 */
+const SessionDetail = memo(function SessionDetail(props: {
+  g: SessionGroup
+  isMobile: boolean
+  onHeaders: (r: RequestLog) => void
+  onLoad: (g: SessionGroup) => void
+}) {
+  const { g, isMobile, onHeaders, onLoad } = props
+  useEffect(() => {
+    if (!g.loaded) onLoad(g)
+  }, [g, onLoad])
+  if (!g.loaded) {
+    return (
+      <div style={{ color: 'var(--text-faint)', padding: '12px 8px', fontSize: 12 }}>
+        加载中…（共 {g.count} 次请求）
+      </div>
+    )
+  }
+  const hidden = g.count - g.requests.length
   return (
-    <Table<RequestLog>
-      size="small"
-      rowKey={(r) => (r.req_id && !r.id ? `live-${r.req_id}` : `${r.id}-${r.created_at}`)}
-      dataSource={g.requests}
+    <>
+      <Table<RequestLog>
+        size="small"
+        rowKey={(r) => (r.req_id && !r.id ? `live-${r.req_id}` : `${r.id}-${r.created_at}`)}
+        dataSource={g.requests}
+        pagination={false}
+        style={{ margin: '2px 0 4px' }}
+        expandable={isMobile ? { expandedRowRender: (r) => <LogDetail r={r} pending={isPending(r)} /> } : undefined}
+        columns={requestColumns(isMobile, onHeaders)}
+      />
+      {hidden > 0 && (
+        <div style={{ color: 'var(--text-faint)', fontSize: 12, padding: '0 8px 8px' }}>
+          仅显示最近 {g.requests.length} 条，另有 {hidden} 条未列出；上方合计为全部 {g.count} 次请求。
+        </div>
+      )}
+    </>
+  )
+})
+
+/** 实时请求流表格：memo 化 + 列定义缓存，仅在 groups / 视口 / 回调变化时重渲染，
+ *  不再被 2Hz 吞吐、每秒统计刷新等无关状态牵动（200 行 × 11 列的重渲染是此前的性能瓶颈）。 */
+const LiveFeedTable = memo(function LiveFeedTable(props: {
+  groups: SessionGroup[]
+  isMobile: boolean
+  expandedKeys: string[]
+  onExpandedKeysChange: (keys: string[]) => void
+  onHeaders: (r: RequestLog) => void
+  onLoad: (g: SessionGroup) => void
+}) {
+  const { groups, isMobile, expandedKeys, onExpandedKeysChange, onHeaders, onLoad } = props
+  const columns = useMemo(() => sessionColumns(isMobile, onHeaders), [isMobile, onHeaders])
+  
+  // 优化：将 expandedRowRender 提取为单独的回调，避免 expandable 对象每次都重新创建
+  const expandedRowRender = useCallback(
+    (g: SessionGroup) =>
+      g.sessionId ? (
+        <SessionDetail g={g} isMobile={isMobile} onHeaders={onHeaders} onLoad={onLoad} />
+      ) : isMobile && g.requests[0] ? (
+        <LogDetail r={g.requests[0]} pending={isPending(g.requests[0])} />
+      ) : null,
+    [isMobile, onHeaders, onLoad],
+  )
+  
+  const rowExpandable = useCallback(
+    (g: SessionGroup) => !!g.sessionId || (isMobile && !!g.requests[0]),
+    [isMobile],
+  )
+  
+  const onExpandedRowsChange = useCallback(
+    (keys: readonly Key[]) => onExpandedKeysChange(keys.map(String)),
+    [onExpandedKeysChange],
+  )
+  
+  const expandable = useMemo(
+    () => ({
+      expandedRowKeys: expandedKeys,
+      onExpandedRowsChange,
+      expandedRowRender,
+      rowExpandable,
+    }),
+    [expandedKeys, onExpandedRowsChange, expandedRowRender, rowExpandable],
+  )
+  const rowClassName = useCallback((_: SessionGroup, i: number) => (i === 0 ? 'row-live' : ''), [])
+  return (
+    <Table<SessionGroup>
+      rowKey="key"
+      dataSource={groups}
       pagination={false}
-      style={{ margin: '2px 0 4px' }}
-      expandable={isMobile ? { expandedRowRender: (r) => <LogDetail r={r} pending={isPending(r)} /> } : undefined}
-      columns={requestColumns(isMobile, onHeaders)}
+      size="small"
+      scroll={{ x: isMobile ? 1030 : 1590 }}
+      rowClassName={rowClassName}
+      expandable={expandable}
+      columns={columns}
     />
   )
-}
+})
 
 /** 仪表盘：当天概览 + 全历史累计 + 热力图 + 模型趋势/用量 + 实时请求流。 */
 export default function Dashboard() {
@@ -464,6 +625,11 @@ export default function Dashboard() {
   const [trend, setTrend] = useState<TrendPoint[]>([])
   const [byModel, setByModel] = useState<GroupStat[]>([])
   const [live, setLive] = useState<RequestLog[]>([])
+  // 后端会话聚合（全量历史口径）与展开时按需拉取的明细（按组键缓存）
+  const [liveViews, setLiveViews] = useState<LiveSession[]>([])
+  const [liveDetails, setLiveDetails] = useState<Record<string, RequestLog[]>>({})
+  // 已展开的会话组键：这些组的明细随实时刷新同步重拉，避免展开后停在旧行
+  const [expandedKeys, setExpandedKeys] = useState<string[]>([])
 
   // 全历史累计（lifetime）与 Token 活动热力图（近一年按日）
   const [lifetime, setLifetime] = useState<Lifetime | null>(null)
@@ -477,12 +643,6 @@ export default function Dashboard() {
   // 调用方 TOP（近 30 天，按密钥聚合）
   const [byKey, setByKey] = useState<GroupStat[]>([])
 
-  const tickRef = useRef(0)
-  const [, setTick] = useState(0)
-
-  // 实时输出 token 吞吐：由后端 stats.throughput 事件以 2Hz 推送
-  const [tps, setTps] = useState(0)
-
   // 趋势图范围（默认实时）；refresh 经 ref 读取当前值，避免重建回调断开 WS 订阅
   const [range, setRange] = useState<TrendRangeKey>('live')
   const rangeRef = useRef(range)
@@ -495,7 +655,6 @@ export default function Dashboard() {
 
   // 快速刷新：当天汇总 + 请求趋势 + 当天模型 TOP
   const refresh = useCallback(async () => {
-    tickRef.current += 1
     const r = TREND_RANGES.find((x) => x.key === rangeRef.current) ?? TREND_RANGES[2]
     const [s, t, m] = await Promise.all([
       statsApi.summary(24, todaySince()),
@@ -505,7 +664,19 @@ export default function Dashboard() {
     setSummary(s)
     setTrend(t)
     setByModel(m)
-    setTick((x) => x + 1)
+  }, [])
+
+  // 仅刷新趋势：实时档借吞吐推送（恒定 2Hz）推进空桶，无需连带重拉汇总/模型 TOP。
+  const refreshTrend = useCallback(async () => {
+    const r = TREND_RANGES.find((x) => x.key === rangeRef.current) ?? TREND_RANGES[2]
+    setTrend(await statsApi.trend(r.hours, r.bucket))
+  }, [])
+
+  // 模型趋势/用量单独刷新：切换「近 7 日 / 近 30 日」只影响这一组数据，
+  // 不必连带重拉 lifetime / 热力图 / 调用方 TOP 三个无关接口。
+  const refreshModelTrend = useCallback(async () => {
+    const days = rangeDaysRef.current
+    setModelTrend(await lifetimeApi.trendByModel(days))
   }, [])
 
   // 慢速刷新：全历史累计 + 热力图（26 周）+ 模型趋势/用量 + 调用方 TOP（按日聚合，无需高频）
@@ -523,46 +694,120 @@ export default function Dashboard() {
     setByKey(bk)
   }, [])
 
+  // 展开会话的明细：按组键拉最近 LIVE_DETAIL_MAX 条（后端聚合行不含全量行）。
+  // 展开期间会随实时刷新重拉，避免面板停在展开那一刻的旧行。
+  const expandedKeysRef = useRef<string[]>([])
+  const setExpanded = useCallback((keys: string[]) => {
+    expandedKeysRef.current = keys
+    setExpandedKeys(keys)
+  }, [])
+  const loadingDetailRef = useRef<Set<string>>(new Set())
+  const loadDetailForKey = useCallback(async (key: string) => {
+    const sid = key.startsWith('sess:') ? key.slice('sess:'.length) : ''
+    if (!sid || loadingDetailRef.current.has(key)) return
+    loadingDetailRef.current.add(key)
+    try {
+      const page = await logApi.list({ page: 1, per_page: LIVE_DETAIL_MAX, session_id: sid })
+      setLiveDetails((prev) => ({ ...prev, [key]: page.items ?? [] }))
+    } finally {
+      loadingDetailRef.current.delete(key)
+    }
+  }, [])
+
+  // 实时会话刷新：后端按 session_id 全量聚合（合计准确），只取最近 LIVE_GROUP_MAX 组。
+  // 节流窗口内被跳过时安排一次尾随刷新，保证窗口末端的完成行最终一定被后端计入。
+  const lastLiveSessionsRef = useRef(0)
+  const liveTrailTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const liveRef = useRef(live)
+  liveRef.current = live
+  const refreshLive = useCallback(async () => {
+    const now = Date.now()
+    const wait = LIVE_SESSIONS_THROTTLE_MS - (now - lastLiveSessionsRef.current)
+    if (wait > 0) {
+      if (!liveTrailTimerRef.current) {
+        liveTrailTimerRef.current = setTimeout(() => {
+          liveTrailTimerRef.current = null
+          void refreshLive()
+        }, wait)
+      }
+      return
+    }
+    lastLiveSessionsRef.current = now
+    const views = await statsApi.liveSessions(LIVE_GROUP_MAX)
+    setLiveViews(views ?? [])
+    // 已展开的会话同步重拉明细，使展开面板与合计一起滚动更新。
+    // 掉出最近 LIVE_GROUP_MAX 组的会话（行已不展示）停止重拉并清缓存，避免无谓请求堆积。
+    const visible = new Set(views.map((v) => v.key))
+    for (const r of liveRef.current) {
+      if (r.id) continue
+      const sid = (r.session_id ?? '').trim()
+      if (sid) visible.add(`sess:${sid}`)
+    }
+    const keys = expandedKeysRef.current
+    const stale = keys.filter((k) => !visible.has(k))
+    const active = keys.filter((k) => visible.has(k))
+    if (stale.length > 0) {
+      setExpanded(active)
+      setLiveDetails((prev) => {
+        const next = { ...prev }
+        for (const k of stale) delete next[k]
+        return next
+      })
+    }
+    if (active.length > 0) await Promise.all(active.map((k) => loadDetailForKey(k)))
+  }, [loadDetailForKey, setExpanded])
+  useEffect(
+    () => () => {
+      if (liveTrailTimerRef.current) clearTimeout(liveTrailTimerRef.current)
+    },
+    [],
+  )
+
   useEffect(() => {
     void refresh()
     void refreshSlow()
-    // 初始拉取最近请求流
-    void logApi.list({ page: 1, per_page: LIVE_FEED_MAX }).then((page) => setLive(page.items ?? []))
-  }, [refresh, refreshSlow])
+    void refreshLive()
+  }, [refresh, refreshSlow, refreshLive])
 
   // 实时：请求受理即滑入"运行中"行；完成事件按 req_id 原位替换为最终结果。
-  // 幂等保护：completed 偶发先于 started 到达（或重复推送）时，以先到者为准，避免行错乱。
-  useWsEvent(WS_EVENTS.requestStarted, (msg) => {
-    const l = msg.payload as RequestLog
-    setLive((prev) =>
-      l.req_id && prev.some((x) => x.req_id === l.req_id)
-        ? prev
-        : [{ ...l }, ...prev].slice(0, LIVE_FEED_MAX),
-    )
-  })
-  useWsEvent(WS_EVENTS.requestCompleted, (msg) => {
-    const l = msg.payload as RequestLog
-    setLive((prev) => {
-      if (l.req_id && prev.some((x) => x.req_id === l.req_id && !!x.id)) return prev
-      const idx = l.req_id ? prev.findIndex((x) => x.req_id === l.req_id && !x.id) : -1
-      if (idx < 0) return [l, ...prev].slice(0, LIVE_FEED_MAX)
-      const next = [...prev]
-      next[idx] = l
-      return next
-    })
-  })
-  useWsEvent(WS_EVENTS.throughput, (msg) => {
-    const p = msg.payload as { tokens_per_sec?: number }
-    setTps(Number.isFinite(p?.tokens_per_sec) ? p.tokens_per_sec! : 0)
-    // 实时档：借 2Hz 吞吐推送节流刷新趋势（约 4s 一次），无流量时也能看到空桶推进
-    if (rangeRef.current === 'live') {
-      const now = Date.now()
-      if (now - lastLiveRefreshRef.current > 4000) {
-        lastLiveRefreshRef.current = now
-        void refresh()
-      }
+  // 幂等保护（completed 先于 started / 重复推送）与容量裁剪见 mergeLiveEvents。
+  // 突发流量下事件按 LIVE_FLUSH_MS 合流，把「每条事件一次重渲染」降为每窗口一次。
+  const pendingEventsRef = useRef<{ row: RequestLog; phase: LivePhase }[]>([])
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flushLive = useCallback(() => {
+    if (flushTimerRef.current) {
+      clearTimeout(flushTimerRef.current)
+      flushTimerRef.current = null
     }
-  })
+    const events = pendingEventsRef.current
+    if (events.length === 0) return
+    pendingEventsRef.current = []
+    setLive((prev) => mergeLiveEvents(prev, events, LIVE_FEED_MAX))
+    // 受理/完成都可能改变会话合计，节流刷新一次后端会话视图
+    void refreshLive()
+  }, [refreshLive])
+  const pushLiveEvent = useCallback(
+    (row: RequestLog, phase: LivePhase) => {
+      pendingEventsRef.current.push({ row, phase })
+      if (!flushTimerRef.current) {
+        flushTimerRef.current = setTimeout(() => {
+          flushTimerRef.current = null
+          flushLive()
+        }, LIVE_FLUSH_MS)
+      }
+    },
+    [flushLive],
+  )
+  useWsEvent(WS_EVENTS.requestStarted, (msg) => pushLiveEvent(msg.payload as RequestLog, 'started'))
+  useWsEvent(WS_EVENTS.requestCompleted, (msg) => pushLiveEvent(msg.payload as RequestLog, 'completed'))
+  // 卸载时丢弃待合流事件（不 setState），避免定时器在组件销毁后仍触发更新
+  useEffect(
+    () => () => {
+      if (flushTimerRef.current) clearTimeout(flushTimerRef.current)
+      pendingEventsRef.current = []
+    },
+    [],
+  )
   useWsEvent(WS_EVENTS.statsUpdated, () => {
     // 突发请求时该事件高频触发：快速数据节流 1s，慢速数据节流 60s
     const now = Date.now()
@@ -575,15 +820,30 @@ export default function Dashboard() {
       void refreshSlow()
     }
   })
+  // 实时档：借吞吐推送节流刷新趋势（约 4s 一次），无流量时也能看到空桶推进。
+  // 吞吐数值本身由 ThroughputTicker 独立订阅，避免 2Hz 状态更新牵动整页。
+  useWsEvent(WS_EVENTS.throughput, () => {
+    if (rangeRef.current === 'live') {
+      const now = Date.now()
+      if (now - lastLiveRefreshRef.current > 4000) {
+        lastLiveRefreshRef.current = now
+        void refreshTrend()
+      }
+    }
+  })
 
   // 断线重连后全量补拉：断连窗口内的事件已丢失，节流窗口一并重置
   useWsReconnected(() => {
     lastStatsRefreshRef.current = 0
     lastSlowRefreshRef.current = 0
     lastLiveRefreshRef.current = 0
+    lastLiveSessionsRef.current = 0
+    pendingEventsRef.current = []
+    setLive([])
+    setLiveDetails({})
     void refresh()
     void refreshSlow()
-    void logApi.list({ page: 1, per_page: LIVE_FEED_MAX }).then((p) => setLive(p.items ?? []))
+    void refreshLive()
   })
 
   // 兜底清理：WS 断连窗口内 completed 丢失的"运行中"行，超过 5 分钟自动移除
@@ -606,11 +866,51 @@ export default function Dashboard() {
     setDrawerOpen(true)
   }, [])
 
-  // 实时流按会话聚合展示（无 X-Session-Id 的调用方保持单行）
-  const liveGroups = useMemo(() => groupBySession(live), [live])
+  // 会话展示：后端全量聚合 + 未落库实时行叠加（合计口径由后端保证，不因窗口截断而残缺）
+  const liveGroups = useMemo(
+    () => mergeSessionViews(liveViews, live, liveDetails, LIVE_GROUP_MAX),
+    [liveViews, live, liveDetails],
+  )
+
+  // 展开会话时按需拉取该会话的最近 LIVE_DETAIL_MAX 条明细（合计由后端全量聚合保证）
+  const loadSessionDetail = useCallback(
+    async (g: SessionGroup) => {
+      if (!g.sessionId) return
+      await loadDetailForKey(g.key)
+    },
+    [loadDetailForKey],
+  )
+
+  // 展开集合变化时记录到 ref，供实时刷新重拉明细；收起时丢弃缓存避免内存堆积
+  const handleExpandedKeysChange = useCallback(
+    (keys: string[]) => {
+      setExpanded(keys)
+      setLiveDetails((prev) => {
+        // 优化：只在实际有 key 被移除时才创建新对象
+        const prevKeys = Object.keys(prev)
+        const keysSet = new Set(keys)
+        let hasRemoved = false
+        for (const k of prevKeys) {
+          if (!keysSet.has(k)) {
+            hasRemoved = true
+            break
+          }
+        }
+        // 无变化时返回原引用，避免展开/收起触发多余重渲染
+        if (!hasRemoved) return prev
+        const next: Record<string, RequestLog[]> = {}
+        for (const k of prevKeys) {
+          if (keysSet.has(k)) next[k] = prev[k]
+        }
+        return next
+      })
+    },
+    [setExpanded],
+  )
 
   const cards = summary ? toStatCards(summary) : null
-  const rangeConf = TREND_RANGES.find((x) => x.key === range) ?? TREND_RANGES[2]
+  // rangeConf 必须是稳定引用：否则 series 的 useMemo 每次都失效，趋势图会在任意无关重渲染时重算几何
+  const rangeConf = useMemo(() => TREND_RANGES.find((x) => x.key === range) ?? TREND_RANGES[2], [range])
   const series = useMemo(
     () =>
       rangeConf.bucket === 'day'
@@ -624,7 +924,6 @@ export default function Dashboard() {
   const heat = useMemo(() => toHeatmap(heatPoints, heatMode, new Date(), 26), [heatPoints, heatMode])
   const mt = useMemo(() => toModelTrend(modelTrend, rangeDays), [modelTrend, rangeDays])
   const donut = useMemo(() => toDonut(mt.series, 5), [mt])
-
   const panelHeaderStyle = { fontSize: 13, color: 'var(--text-secondary)', letterSpacing: '0.06em' } as const
 
   return (
@@ -678,17 +977,15 @@ export default function Dashboard() {
               <div style={{ display: 'flex', flexWrap: 'wrap', rowGap: 6, justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
                 <span style={{ ...panelHeaderStyle, whiteSpace: 'nowrap' }}>请求趋势</span>
                 <div style={{ display: 'inline-flex', alignItems: 'center', gap: 14 }}>
-                  <span className="mono" style={{ fontSize: 12, color: 'var(--text-faint)' }}>
-                    实时输出 <span style={{ color: 'var(--accent)' }}>{compactCN(Math.round(tps))}</span> tok/s
-                  </span>
+                  <ThroughputTicker />
                   <Segmented
                     size="small"
                     value={range}
                     onChange={(v) => {
                       const k = v as TrendRangeKey
-                      rangeRef.current = k // 立即生效，refresh 不依赖重渲染时序
+                      rangeRef.current = k // 立即生效，refreshTrend 不依赖重渲染时序
                       setRange(k)
-                      void refresh()
+                      void refreshTrend()
                     }}
                     options={TREND_RANGES.map((r) => ({ value: r.key, label: r.label }))}
                   />
@@ -727,7 +1024,7 @@ export default function Dashboard() {
                     const d = v as 7 | 30
                     rangeDaysRef.current = d
                     setRangeDays(d)
-                    void refreshSlow()
+                    void refreshModelTrend()
                   }}
                   options={[
                     { value: 7, label: '近 7 日' },
@@ -806,7 +1103,11 @@ export default function Dashboard() {
 
       <Card
         className="panel"
-        styles={{ body: { padding: 0 }, header: { borderBottom: "1px solid var(--border-faint)" } }}
+        // 表格背景为不透明直角，padding 0 时会盖住面板底部圆角边框；裁剪 body 底角（10px 圆角 - 1px 边框）对齐
+        styles={{
+          body: { padding: 0, overflow: 'hidden', borderBottomLeftRadius: 9, borderBottomRightRadius: 9 },
+          header: { borderBottom: '1px solid var(--border-faint)' },
+        }}
         title={
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
             <span className="live-dot" />
@@ -814,24 +1115,13 @@ export default function Dashboard() {
           </span>
         }
       >
-        <Table<SessionGroup>
-          rowKey="key"
-          dataSource={liveGroups}
-          pagination={false}
-          size="small"
-          scroll={{ x: isMobile ? 830 : 1390 }}
-          rowClassName={(_, i) => (i === 0 ? 'row-live' : '')}
-          onRow={(_, i) => ({ className: i === 0 ? 'row-live' : '' })}
-          expandable={{
-            expandedRowRender: (g) =>
-              g.sessionId ? (
-                <SessionDetail g={g} isMobile={isMobile} onHeaders={showHeaders} />
-              ) : isMobile ? (
-                <LogDetail r={g.requests[0]} pending={isPending(g.requests[0])} />
-              ) : null,
-            rowExpandable: (g) => !!g.sessionId || isMobile,
-          }}
-          columns={sessionColumns(isMobile, showHeaders)}
+        <LiveFeedTable
+          groups={liveGroups}
+          isMobile={isMobile}
+          expandedKeys={expandedKeys}
+          onExpandedKeysChange={handleExpandedKeysChange}
+          onHeaders={showHeaders}
+          onLoad={loadSessionDetail}
         />
       </Card>
 

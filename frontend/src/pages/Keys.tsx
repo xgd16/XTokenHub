@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TableColumnsType } from 'antd'
 import { App, Button, Drawer, Form, Input, Popconfirm, Space, Switch, Table, Tag, Tooltip, Typography } from 'antd'
 import { CopyOutlined, KeyOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
@@ -66,8 +66,16 @@ export default function Keys() {
     void load()
   }, [load])
 
-  // 新请求完成 -> 用量变化 -> 实时刷新
-  useWsEvent(WS_EVENTS.statsUpdated, () => void load())
+  // 新请求完成 -> 用量变化 -> 节流刷新（5s）。stats.updated 每个请求完成都推送，
+  // 不节流时突发流量会对 /keys + /stats/by-key 各打一次，且整表反复重渲染。
+  const lastRefreshRef = useRef(0)
+  useWsEvent(WS_EVENTS.statsUpdated, () => {
+    const now = Date.now()
+    if (now - lastRefreshRef.current > 5000) {
+      lastRefreshRef.current = now
+      void load()
+    }
+  })
 
   // 断线重连后补拉一次，避免断连窗口内事件丢失
   useWsReconnected(() => void load())
@@ -105,8 +113,10 @@ export default function Keys() {
       }
       setDrawerOpen(false)
       void load()
-    } catch {
-      // 表单校验失败
+    } catch (e) {
+      // validateFields 失败时抛 { errorFields }（错误已在表单内展示）；
+      // 其余为保存失败（重名 / 网络异常），必须提示，否则抽屉静默不动。
+      if (!(e as { errorFields?: unknown })?.errorFields) message.error((e as Error).message)
     }
   }
 

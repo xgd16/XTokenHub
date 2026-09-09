@@ -7,9 +7,7 @@ import (
 
 	"xtokenhub/internal/gateway"
 	"xtokenhub/internal/model"
-)
-
-// AvailableModels 聚合启用渠道显式配置的模型清单：去重、排序；
+)// AvailableModels 聚合启用渠道显式配置的模型清单：去重、排序；
 // models 为空的渠道（支持全部）无法枚举，不产生条目。
 func TestAvailableModels(t *testing.T) {
 	src := &memChannels{items: []model.Channel{

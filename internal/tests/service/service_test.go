@@ -347,6 +347,38 @@ func TestLogAndStatsService(t *testing.T) {
 	if _, err := statsSvc.ByChannel(context.Background(), 24); err != nil {
 		t.Errorf("by-channel: %v", err)
 	}
+
+	// 长会话端到端：会话合计覆盖全量历史，不因前端只展示最近若干组而残缺。
+	for i := 0; i < 108; i++ {
+		l := model.RequestLog{
+			SessionID: "long", Model: "glm-5.3-flash", ChannelName: "c",
+			Protocol: model.ProtocolChatCompletions, ForwardMode: model.ForwardNativePassthrough,
+			PromptTokens: 100_000, CompletionTokens: 30_000, CachedTokens: 99_000,
+			DurationMS: 10_000, CreatedAt: now.Add(time.Duration(i) * time.Second),
+		}
+		if err := logRepo.Create(context.Background(), &l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sessions, err := statsSvc.LiveSessions(context.Background(), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var long *repository.LiveSession
+	for i := range sessions {
+		if sessions[i].SessionID == "long" {
+			long = &sessions[i]
+		}
+	}
+	if long == nil {
+		t.Fatal("未返回 long 会话")
+	}
+	if long.Requests != 108 {
+		t.Errorf("long.Requests = %d, want 108", long.Requests)
+	}
+	if long.TotalTokens != 108*130_000 {
+		t.Errorf("long.TotalTokens = %d, want %d", long.TotalTokens, 108*130_000)
+	}
 }
 
 // 序列化烟测：模型 JSON 标签符合前端契约。

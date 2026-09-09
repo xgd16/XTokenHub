@@ -16,17 +16,18 @@ import (
 
 // Deps 路由依赖集合。
 type Deps struct {
-	Cfg          *config.Config
-	Channels     *admin.ChannelHandler
-	CustomModels *admin.CustomModelHandler
-	Models       *admin.ModelHandler
-	Keys         *admin.KeyHandler
-	Logs         *admin.LogHandler
-	Stats        *admin.StatsHandler
-	Cleanup      *admin.CleanupHandler
-	WS           *admin.WSHandler
-	Gateway      *gwhandler.Handler
-	WebFS        fs.FS // 前端产物（可为 nil：仅 API）
+	Cfg            *config.Config
+	Channels       *admin.ChannelHandler
+	CustomModels   *admin.CustomModelHandler
+	Models         *admin.ModelHandler
+	Keys           *admin.KeyHandler
+	Logs           *admin.LogHandler
+	Stats          *admin.StatsHandler
+	Cleanup        *admin.CleanupHandler
+	WS             *admin.WSHandler
+	SessionHeaders *admin.SessionHeaderConfigHandler
+	Gateway        *gwhandler.Handler
+	WebFS          fs.FS // 前端产物（可为 nil：仅 API）
 }
 
 // Register 注册全部路由。
@@ -70,6 +71,11 @@ func Register(engine *gin.Engine, d *Deps) {
 		api.GET("/stats/by-key", d.Stats.ByKey)
 		api.GET("/stats/lifetime", d.Stats.Lifetime)
 		api.GET("/stats/trend-by-model", d.Stats.TrendByModel)
+		api.GET("/stats/live-sessions", d.Stats.LiveSessions)
+		api.GET("/settings/session-headers", d.SessionHeaders.List)
+		api.POST("/settings/session-headers", d.SessionHeaders.Create)
+		api.DELETE("/settings/session-headers/:id", d.SessionHeaders.Delete)
+		api.PUT("/settings/session-headers/:key/toggle", d.SessionHeaders.ToggleEnabled)
 	}
 
 	// 网关端点

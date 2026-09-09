@@ -25,7 +25,7 @@ func NewMemoryDB(t *testing.T) *gorm.DB {
 		t.Fatalf("获取底层连接: %v", err)
 	}
 	sqlDB.SetMaxOpenConns(1)
-	if err := db.AutoMigrate(&model.Channel{}, &model.APIKey{}, &model.RequestLog{}, &model.CustomModel{}); err != nil {
+	if err := db.AutoMigrate(&model.Channel{}, &model.APIKey{}, &model.RequestLog{}, &model.CustomModel{}, &model.SessionHeaderConfig{}); err != nil {
 		t.Fatalf("迁移: %v", err)
 	}
 	return db

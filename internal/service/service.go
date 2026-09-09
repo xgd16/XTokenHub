@@ -224,6 +224,7 @@ type ListInput struct {
 	ChannelID   int64  `form:"channel_id"`
 	KeyID       int64  `form:"key_id"`
 	Model       string `form:"model"`
+	SessionID   string `form:"session_id"` // 按会话展开明细时使用
 	Stream      *bool  `form:"stream"`
 	ErrorOnly   bool   `form:"error_only"`
 	Hours       int    `form:"hours"` // 最近 N 小时
@@ -237,6 +238,7 @@ func (s *LogService) List(ctx context.Context, in ListInput, p pagination.Params
 		ChannelID:   in.ChannelID,
 		KeyID:       in.KeyID,
 		Model:       in.Model,
+		SessionID:   in.SessionID,
 		Stream:      in.Stream,
 		ErrorOnly:   in.ErrorOnly,
 	}
@@ -333,6 +335,11 @@ func (s *StatsService) TrendByDayModel(ctx context.Context, days int) ([]reposit
 		days = 400
 	}
 	return s.repo.TrendByDayModel(ctx, time.Now().AddDate(0, 0, -days))
+}
+
+// LiveSessions 最近活跃会话聚合（会话统计覆盖全量历史，limit 为返回组数上限）。
+func (s *StatsService) LiveSessions(ctx context.Context, limit int) ([]repository.LiveSession, error) {
+	return s.repo.LiveSessions(ctx, repository.LiveSessionsInput{Limit: limit})
 }
 
 // LifetimeStat 全历史累计统计（由按日聚合推导）。

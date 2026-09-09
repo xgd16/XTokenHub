@@ -236,6 +236,7 @@ describe('toDonut', () => {
 
 import { groupBySession } from './transform'
 import type { RequestLog } from '../api/log'
+import type { LiveSession } from '../api/stats'
 
 /** 构造请求日志行的最小工厂。 */
 function mkLog(over: Partial<RequestLog>): RequestLog {
@@ -324,5 +325,262 @@ describe('groupBySession', () => {
     const [g] = groupBySession(rows)
     expect(g.userAgent).toBe('ZCode/3.11.2')
     expect(g.keyName).toBe('k2')
+  })
+
+  it('协议与转发模式去重保持出现顺序', () => {
+    const rows = [
+      mkLog({ id: 3, session_id: 's', protocol: 'responses', forward_mode: 'converted' }),
+      mkLog({ id: 2, session_id: 's', protocol: 'chat_completions', forward_mode: 'native_passthrough' }),
+      mkLog({ id: 1, session_id: 's', protocol: 'responses', forward_mode: 'converted' }),
+    ]
+    const [g] = groupBySession(rows)
+    expect(g.protocols).toEqual(['responses', 'chat_completions'])
+    expect(g.modes).toEqual(['converted', 'native_passthrough'])
+  })
+})
+
+import { mergeLiveEvent, mergeLiveEvents, mergeSessionViews, trimLiveRows } from './transform'
+
+describe('trimLiveRows', () => {
+  it('不超容量时原样返回', () => {
+    const rows = [mkLog({ id: 1, session_id: 's1' }), mkLog({ id: 2 })]
+    expect(trimLiveRows(rows, 30)).toBe(rows)
+    expect(trimLiveRows(rows, 0)).toEqual([])
+  })
+
+  it('超容量时从最旧端整组移除会话，不把会话切成两半', () => {
+    // 新→旧：s1 有 3 行（最新），散行 2 行，s2 有 4 行（最旧）
+    const rows = [
+      mkLog({ id: 1, session_id: 's1' }),
+      mkLog({ id: 2, session_id: 's1' }),
+      mkLog({ id: 3, session_id: 's1' }),
+      mkLog({ id: 4 }),
+      mkLog({ id: 5 }),
+      mkLog({ id: 6, session_id: 's2' }),
+      mkLog({ id: 7, session_id: 's2' }),
+      mkLog({ id: 8, session_id: 's2' }),
+      mkLog({ id: 9, session_id: 's2' }),
+    ]
+    // 容量 6：需移除 3 行——最旧的 s2 整组 4 行被移除，即使超摘 1 行
+    const out = trimLiveRows(rows, 6)
+    expect(out.map((r) => r.id)).toEqual([1, 2, 3, 4, 5])
+    // 聚合校验：s1 组仍包含全部 3 行
+    const groups = groupBySession(out)
+    const s1 = groups.find((g) => g.sessionId === 's1')
+    expect(s1?.requests).toHaveLength(3)
+  })
+
+  it('移除旧组后恰好不超容量时不误伤更多组', () => {
+    const rows = [
+      mkLog({ id: 1, session_id: 'a' }),
+      mkLog({ id: 2, session_id: 'b' }),
+      mkLog({ id: 3, session_id: 'c' }),
+      mkLog({ id: 4, session_id: 'c' }),
+    ]
+    // 容量 3：移除 1 行即可 → 最旧的 c 组整组移除（2 行），a/b 保留
+    expect(trimLiveRows(rows, 3).map((r) => r.id)).toEqual([1, 2])
+  })
+
+  it('单一会话自身超容量时退化为保留最新 max 行', () => {
+    const rows = Array.from({ length: 12 }, (_, i) => mkLog({ id: i + 1, session_id: 'big' }))
+    const out = trimLiveRows(rows, 10)
+    expect(out).toHaveLength(10)
+    expect(out.map((r) => r.id)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+  })
+
+  it('无 session_id 的行按 req_id 作为散行独立裁剪', () => {
+    const rows = [
+      mkLog({ id: 0, req_id: 101, session_id: '' }),
+      mkLog({ id: 0, req_id: 102, session_id: '' }),
+      mkLog({ id: 3, session_id: '' }),
+    ]
+    expect(trimLiveRows(rows, 2).map((r) => r.req_id ?? r.id)).toEqual([101, 102])
+  })
+})
+
+describe('mergeLiveEvent', () => {
+  it('started：新请求插到最前，重复 req_id 不重复插入', () => {
+    const prev = [mkLog({ id: 1, req_id: 1 })]
+    const next = mergeLiveEvent(prev, mkLog({ id: 0, req_id: 2, model: 'new' }), 'started')
+    expect(next.map((r) => r.req_id)).toEqual([2, 1])
+    expect(next[0].model).toBe('new')
+    // 重复 started（同一 req_id）原样返回同一引用
+    expect(mergeLiveEvent(next, mkLog({ id: 0, req_id: 2 }), 'started')).toBe(next)
+  })
+
+  it('started：不修改传入行（拷贝后插入）', () => {
+    const row = mkLog({ id: 0, req_id: 7 })
+    const next = mergeLiveEvent([], row, 'started')
+    expect(next[0]).not.toBe(row)
+    expect(next[0]).toEqual(row)
+  })
+
+  it('completed：按 req_id 原位替换进行中行，不改变顺序', () => {
+    const prev = [mkLog({ id: 0, req_id: 5, model: 'running' }), mkLog({ id: 4, req_id: 4 })]
+    const next = mergeLiveEvent(prev, mkLog({ id: 99, req_id: 5, model: 'done' }), 'completed')
+    expect(next.map((r) => r.id)).toEqual([99, 4])
+    expect(next[0].model).toBe('done')
+  })
+
+  it('completed：已落库的同一 req_id 重复推送直接忽略', () => {
+    const prev = [mkLog({ id: 9, req_id: 9 })]
+    expect(mergeLiveEvent(prev, mkLog({ id: 9, req_id: 9 }), 'completed')).toBe(prev)
+  })
+
+  it('completed：无匹配进行中行时作为新行插入最前（started 丢失兜底）', () => {
+    const prev = [mkLog({ id: 1, req_id: 1 })]
+    const next = mergeLiveEvent(prev, mkLog({ id: 2, req_id: 2 }), 'completed')
+    expect(next.map((r) => r.req_id)).toEqual([2, 1])
+  })
+
+  it('completed 先于 started 到达时不产生重复行', () => {
+    let rows: RequestLog[] = []
+    rows = mergeLiveEvent(rows, mkLog({ id: 3, req_id: 3, model: 'final' }), 'completed')
+    rows = mergeLiveEvent(rows, mkLog({ id: 0, req_id: 3, model: 'stale' }), 'started')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].model).toBe('final')
+  })
+})
+
+describe('mergeLiveEvents', () => {
+  it('空事件返回原引用', () => {
+    const prev = [mkLog({ id: 1 })]
+    expect(mergeLiveEvents(prev, [], 200)).toBe(prev)
+  })
+
+  it('按到达顺序合并并统一裁剪容量', () => {
+    // 到达顺序（旧→新）：old 会话先来，随后同会话的 2、3，最后 3 完成
+    const events = [
+      { row: mkLog({ id: 1, req_id: 1, session_id: 'old' }), phase: 'started' as const },
+      { row: mkLog({ id: 0, req_id: 2, session_id: 's1' }), phase: 'started' as const },
+      { row: mkLog({ id: 0, req_id: 3, session_id: 's1' }), phase: 'started' as const },
+      { row: mkLog({ id: 33, req_id: 3, session_id: 's1', model: 'done' }), phase: 'completed' as const },
+    ]
+    // 合并后新→旧为 [3(done), 2, 1]；容量 2 时最旧的 old 整组移除
+    const out = mergeLiveEvents([], events, 2)
+    expect(out.map((r) => r.req_id)).toEqual([3, 2])
+    expect(out[0].model).toBe('done')
+  })
+
+  it('批量合并结果与逐条 mergeLiveEvent 一致', () => {
+    const events = [
+      { row: mkLog({ id: 0, req_id: 1 }), phase: 'started' as const },
+      { row: mkLog({ id: 0, req_id: 2 }), phase: 'started' as const },
+      { row: mkLog({ id: 11, req_id: 1 }), phase: 'completed' as const },
+      { row: mkLog({ id: 12, req_id: 2 }), phase: 'completed' as const },
+    ]
+    let seq: RequestLog[] = []
+    for (const e of events) seq = mergeLiveEvent(seq, e.row, e.phase)
+    expect(mergeLiveEvents([], events, 200)).toEqual(seq)
+  })
+})
+
+/** 构造后端会话聚合视图的最小工厂。 */
+function mkView(over: Partial<LiveSession>): LiveSession {
+  return {
+    key: 'sess:s1',
+    session_id: 's1',
+    requests: 1,
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+    cached_tokens: 0,
+    total_ms: 0,
+    errors: 0,
+    first_at: '2026-09-07T10:00:00+08:00',
+    last_at: '2026-09-07T10:00:00+08:00',
+    user_agent: '',
+    key_name: '',
+    models: [],
+    channels: [],
+    protocols: [],
+    modes: [],
+    ...over,
+  }
+}
+
+describe('mergeSessionViews', () => {
+  it('后端合计原样透传，count 取全量口径而非已加载行数', () => {
+    const views = [mkView({ requests: 92, total_tokens: 7_334_300, completion_tokens: 147_900, prompt_tokens: 7_186_400, total_ms: 743_450, errors: 3 })]
+    const [g] = mergeSessionViews(views, [])
+    expect(g.count).toBe(92)
+    expect(g.totalTokens).toBe(7_334_300)
+    expect(g.totalMs).toBe(743_450)
+    expect(g.errors).toBe(3)
+    // 明细未加载，展开时才拉取
+    expect(g.loaded).toBe(false)
+    expect(g.requests).toHaveLength(0)
+  })
+
+  it('叠加未落库的进行中行，但不重复计入已完成行', () => {
+    const views = [mkView({ requests: 10, total_tokens: 1000 })]
+    const pending = [
+      mkLog({ id: 0, req_id: 50, session_id: 's1', total_tokens: 100, completion_tokens: 40 }), // 未落库 → 叠加
+      mkLog({ id: 11, req_id: 49, session_id: 's1', total_tokens: 999 }), // 已落库 → 后端已计入，跳过
+    ]
+    const [g] = mergeSessionViews(views, pending)
+    expect(g.count).toBe(11)
+    expect(g.totalTokens).toBe(1100)
+    expect(g.running).toBe(1)
+    expect(g.requests).toHaveLength(1)
+    expect(g.requests[0].req_id).toBe(50)
+  })
+
+  it('多个未落库进行中行保持新→旧顺序且排在已加载明细之前', () => {
+    const persisted = [mkLog({ id: 1, session_id: 's1' }), mkLog({ id: 2, session_id: 's1' })]
+    const views = [mkView({ requests: 2 })]
+    // pending 为实时流的「新→旧」顺序
+    const pending = [
+      mkLog({ id: 0, req_id: 32, session_id: 's1' }),
+      mkLog({ id: 0, req_id: 31, session_id: 's1' }),
+    ]
+    const [g] = mergeSessionViews(views, pending, { 'sess:s1': persisted })
+    expect(g.requests.map((r) => r.req_id)).toEqual([32, 31, undefined, undefined])
+    expect(g.requests.map((r) => r.id)).toEqual([0, 0, 1, 2])
+    expect(g.running).toBe(2)
+  })
+
+  it('散行：后端带回整行时直接可展示', () => {
+    const row = mkLog({ id: 7, total_tokens: 15, upstream_status: 200 })
+    const views = [mkView({ key: 'req:7', session_id: '', requests: 1, total_tokens: 15, last_request: row })]
+    const [g] = mergeSessionViews(views, [])
+    expect(g.loaded).toBe(true)
+    expect(g.requests).toEqual([row])
+    expect(g.count).toBe(1)
+  })
+
+  it('协议/模式透传后端聚合，并叠加未落库行的模式', () => {
+    const views = [mkView({ protocols: ['responses'], modes: ['converted'] })]
+    const pending = [mkLog({ id: 0, req_id: 5, session_id: 's1', protocol: 'responses', forward_mode: 'native_passthrough' })]
+    const [g] = mergeSessionViews(views, pending)
+    // 未落库行与后端已聚合的 protocol 相同，去重后仍只有一项
+    expect(g.protocols).toEqual(['responses'])
+    expect(g.modes).toEqual(['converted', 'native_passthrough'])
+  })
+
+  it('新会话（后端尚无记录）由实时行置顶', () => {
+    const views = [mkView({ key: 'sess:old', session_id: 'old', requests: 3 })]
+    const pending = [mkLog({ id: 0, req_id: 99, session_id: 'fresh', total_tokens: 50 })]
+    const out = mergeSessionViews(views, pending)
+    expect(out.map((g) => g.sessionId)).toEqual(['fresh', 'old'])
+    expect(out[0].count).toBe(1)
+    expect(out[0].running).toBe(1)
+  })
+
+  it('已加载明细优先于后端 last_request，且不丢全量 count', () => {
+    const rows = [mkLog({ id: 1, session_id: 's1' }), mkLog({ id: 2, session_id: 's1' })]
+    const views = [mkView({ requests: 2 })]
+    const [g] = mergeSessionViews(views, [], { 'sess:s1': rows })
+    expect(g.loaded).toBe(true)
+    expect(g.requests).toEqual(rows)
+    expect(g.count).toBe(2)
+  })
+
+  it('maxGroups 限制展示组数（新会话不撑破上限）', () => {
+    const views = [mkView({ key: 'sess:a', session_id: 'a' }), mkView({ key: 'sess:b', session_id: 'b' })]
+    const pending = [mkLog({ id: 0, req_id: 1, session_id: 'fresh' })]
+    expect(mergeSessionViews(views, pending, {}, 2)).toHaveLength(2)
+    // 新会话置顶，故被截掉的是最旧的 b
+    expect(mergeSessionViews(views, pending, {}, 2).map((g) => g.sessionId)).toEqual(['fresh', 'a'])
   })
 })

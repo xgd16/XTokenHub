@@ -38,10 +38,8 @@ func NormalizeBaseURL(base string) (string, bool) {
 	if strings.HasSuffix(lower, "/v1") {
 		base = base[:len(base)-3]
 	}
-	if base == "" {
-		return "", false
-	}
-	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
+	// 协议头按小写比较，兼容 HTTPS:// 等大写写法
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
 		return "", false
 	}
 	return base, true

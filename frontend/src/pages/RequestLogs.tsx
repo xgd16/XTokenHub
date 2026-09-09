@@ -147,7 +147,7 @@ const LOG_COLUMNS: TableColumnsType<RequestLog> = [
 ]
 
 /** 移动端列：时间/模型/Token 合计/状态，其余收进展开行。 */
-const MOBILE_LOG_COLUMNS: TableColumnsType<RequestLog> = [
+export const MOBILE_LOG_COLUMNS: TableColumnsType<RequestLog> = [
   {
     key: 'time',
     title: '时间',
@@ -181,6 +181,7 @@ const MOBILE_LOG_COLUMNS: TableColumnsType<RequestLog> = [
   {
     key: 'status',
     title: '状态',
+    dataIndex: 'upstream_status',
     width: 96,
     render: (v, r) =>
       isPending(r) ? (
@@ -206,7 +207,7 @@ export default function RequestLogs() {
   const [loading, setLoading] = useState(false)
   const [channels, setChannels] = useState<Channel[]>([])
   const [keys, setKeys] = useState<APIKey[]>([])
-  const [filters, setFilters] = useState<LogQuery>({})
+  const [filters, setFilters] = useState<LogQuery>({ hours: 24 })
   const [cleanupStatus, setCleanupStatus] = useState<CleanupStatus | null>(null)
   const [cleaning, setCleaning] = useState(false)
 
@@ -255,10 +256,14 @@ export default function RequestLogs() {
     }
   }, [load, message])
 
+  // 实时插入条件：第 1 页且除时间窗外无其它筛选（新请求必然落在任何时间窗内）。
+  // 注意不能直接用 Object.keys(filters).length，因为默认时间窗始终占一个键。
+  const liveFeedActive = page === 1 && Object.keys(filters).every((k) => k === 'hours')
+
   // 新请求受理即插入"运行中"行（仅第 1 页且无筛选时）；完成事件原位替换并计数。
   // 幂等保护：completed 偶发先于 started 到达（或重复推送）时，以先到者为准。
   useWsEvent(WS_EVENTS.requestStarted, (msg) => {
-    if (page === 1 && Object.keys(filters).length === 0) {
+    if (liveFeedActive) {
       const l = msg.payload as RequestLog
       setItems((prev) =>
         l.req_id && prev.some((x) => x.req_id === l.req_id)
@@ -268,7 +273,7 @@ export default function RequestLogs() {
     }
   })
   useWsEvent(WS_EVENTS.requestCompleted, (msg) => {
-    if (page === 1 && Object.keys(filters).length === 0) {
+    if (liveFeedActive) {
       const l = msg.payload as RequestLog
       setItems((prev) => {
         if (l.req_id && prev.some((x) => x.req_id === l.req_id && !!x.id)) return prev
@@ -301,13 +306,26 @@ export default function RequestLogs() {
 
   const setFilter = (patch: Partial<LogQuery>) => {
     setPage(1)
-    setFilters((f) => ({ ...f, ...patch }))
+    setFilters((f) => {
+      const next = { ...f, ...patch }
+      // 清空筛选（allowClear / 空输入）会写入 undefined，开关关闭会写入 false；
+      // 剔除后避免残留键让 liveFeedActive 永远判为「有筛选」而停掉实时行插入。
+      // 注意 hours=0 表示「全部」，是有意义的取值，不能一并剔除。
+      for (const k of Object.keys(next) as (keyof LogQuery)[]) {
+        if (next[k] === undefined || next[k] === false) delete next[k]
+      }
+      return next
+    })
   }
 
   return (
     <Card
       className="panel"
-      styles={{ body: { padding: 0 }, header: { borderBottom: "1px solid var(--border-faint)", paddingInline: 16 } }}
+      // 表格背景为不透明直角，padding 0 时会盖住面板底部圆角边框；裁剪 body 底角（10px 圆角 - 1px 边框）对齐
+      styles={{
+        body: { padding: 0, overflow: 'hidden', borderBottomLeftRadius: 9, borderBottomRightRadius: 9 },
+        header: { borderBottom: '1px solid var(--border-faint)', paddingInline: 16 },
+      }}
       title={
         <span style={{ fontSize: 13, color: 'var(--text-secondary)', letterSpacing: '0.06em' }}>
           请求日志 · Token 计量与缓存命中

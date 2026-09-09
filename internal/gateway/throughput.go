@@ -89,6 +89,21 @@ func (t *Throughput) StreamEnd(id int64) {
 	delete(t.sess, id)
 }
 
+// StreamFinish 流式会话结束：用上游报告的最终精确 completion token 校准
+// 此前按文本估算上报的累计值（差值可为负，允许向下修正），并移除会话。
+func (t *Throughput) StreamFinish(id int64, finalTotal int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	prev, ok := t.sess[id]
+	if !ok {
+		return
+	}
+	delete(t.sess, id)
+	if d := finalTotal - prev; d != 0 {
+		t.cur += d
+	}
+}
+
 // Add 一次性计入 token（非流式请求完成、或流式最终兜底新增量）。n 为 completion token。
 func (t *Throughput) Add(n int64) {
 	if n <= 0 {
@@ -127,6 +142,10 @@ func (t *Throughput) rotate() {
 	var sum int64
 	for _, b := range t.buckets {
 		sum += b
+	}
+	// 校准差值可能令窗口合计为负（估算虚高跨 bucket 结转），速率不为负
+	if sum < 0 {
+		sum = 0
 	}
 	secs := float64(int64(t.interval)*t.window) / float64(time.Second)
 	payload := ThroughputPayload{

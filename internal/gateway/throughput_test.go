@@ -132,3 +132,78 @@ func TestThroughputEndedSessionIgnored(t *testing.T) {
 		t.Fatalf("结束会话不应仍处于 active，got=%d", tp.Active())
 	}
 }
+
+func TestThroughputStreamFinishReconciles(t *testing.T) {
+	bus := eventbus.New()
+	col := &collectThroughput{}
+	unsub := col.unsub(bus)
+	defer unsub()
+
+	interval := 20 * time.Millisecond
+	window := 100 * time.Millisecond
+	tp := NewThroughput(bus, interval, window)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go tp.Run(ctx)
+
+	// 估算累计上报 40，最终精确值 30（上游 usage 更准）：应向下修正 10
+	id := tp.StreamBegin()
+	tp.StreamUpdate(id, 40)
+	tp.StreamFinish(id, 30)
+
+	id2 := tp.StreamBegin()
+	tp.StreamUpdate(id2, 5)
+	// 精确值高于估算：向上修正
+	tp.StreamFinish(id2, 12)
+	time.Sleep(interval * 3)
+
+	got, n := col.latest()
+	if n == 0 {
+		t.Fatalf("未收到 stats.throughput 事件")
+	}
+	if got.ActiveStreams != 0 {
+		t.Fatalf("会话结束后 ActiveStreams 应为 0，got=%d", got.ActiveStreams)
+	}
+	// 净计入 = 30 + 12 = 42 tok / 0.1s 窗口
+	if got.TokensPerSec < 200 || got.TokensPerSec > 640 {
+		t.Fatalf("TokensPerSec = %v, 期望 ~420", got.TokensPerSec)
+	}
+}
+
+func TestThroughputStreamFinishUnknownSession(t *testing.T) {
+	tp := NewThroughput(nil, 10*time.Millisecond, 100*time.Millisecond)
+	// 未知会话 id 的 StreamFinish 应安全忽略
+	tp.StreamFinish(999, 100)
+	if tp.Active() != 0 {
+		t.Fatalf("未知会话不应计入 active, got=%d", tp.Active())
+	}
+}
+
+func TestThroughputNegativeWindowClamped(t *testing.T) {
+	bus := eventbus.New()
+	col := &collectThroughput{}
+	unsub := col.unsub(bus)
+	defer unsub()
+
+	interval := 20 * time.Millisecond
+	window := 40 * time.Millisecond // 2 桶
+	tp := NewThroughput(bus, interval, window)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go tp.Run(ctx)
+
+	// 估算上报跨 bucket 结转后被大幅向下修正：窗口合计为负时速率应为 0
+	id := tp.StreamBegin()
+	tp.StreamUpdate(id, 100)
+	time.Sleep(interval * 3) // 上报已滚出窗口
+	tp.StreamFinish(id, 10)  // 负差值 -90
+	time.Sleep(interval * 3)
+
+	got, n := col.latest()
+	if n == 0 {
+		t.Fatalf("未收到 stats.throughput 事件")
+	}
+	if got.TokensPerSec < 0 {
+		t.Fatalf("速率不应为负, got=%v", got.TokensPerSec)
+	}
+}

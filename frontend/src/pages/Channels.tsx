@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   App,
   Button,
@@ -43,7 +43,7 @@ import { useIsMobile } from '../utils/useIsMobile'
 
 const { Text } = Typography
 /** 协议探测徽标组：✓ 原生 / ✗ / 未探测。 */
-function ProtocolBadges({ channel }: { channel: Channel }) {
+const ProtocolBadges = memo(function ProtocolBadges({ channel }: { channel: Channel }) {
   const native = nativeProtocolsOf(channel)
   const probed = channel.last_probe_at != null
   return (
@@ -75,7 +75,7 @@ function ProtocolBadges({ channel }: { channel: Channel }) {
       })}
     </Space>
   )
-}
+})
 
 /** 模型标签：单击复制该模型名；maxWidth 用于表格列内防止单个超长模型名撑爆布局。 */
 function modelTagNode(model: string, copy: (text: string, tip: string) => void, maxWidth?: number) {
@@ -222,16 +222,17 @@ function BaseUrlCell({ url }: { url: string }) {
   )
 }
 
-/** 渠道卡片：头部名称 + 启用开关，中部键值信息，底部操作；网格内等高。 */
-function ChannelCard(props: {
+/** 渠道卡片：头部名称 + 启用开关，中部键值信息，底部操作；网格内等高。
+ *  回调按渠道传参（而非闭包捕获），父级可传稳定引用，配合 memo 避免任一余额/探测更新牵动全部卡片。 */
+const ChannelCard = memo(function ChannelCard(props: {
   ch: Channel
   balance?: ChannelBalance
   probing: boolean
-  onProbe: () => void
-  onEdit: () => void
-  onToggle: () => void
-  onModels: () => void
-  onDelete: () => Promise<void>
+  onProbe: (ch: Channel) => void
+  onEdit: (ch: Channel) => void
+  onToggle: (ch: Channel) => void
+  onModels: (ch: Channel) => void
+  onDelete: (ch: Channel) => Promise<void>
 }) {
   const { ch, balance, probing } = props
   const enabled = ch.status === 1
@@ -260,7 +261,7 @@ function ChannelCard(props: {
           </Tag>
         </Space>
         <Tooltip title={enabled ? '启用中 · 点击停用' : '已停用 · 点击启用'}>
-          <Switch size="small" checked={enabled} onChange={props.onToggle} />
+          <Switch size="small" checked={enabled} onChange={() => props.onToggle(ch)} />
         </Tooltip>
       </div>
 
@@ -277,7 +278,7 @@ function ChannelCard(props: {
         {ch.models ? (
           <>
             <span className="mono" style={{ fontSize: 12 }}>{modelCount} 个</span>
-            <Button size="small" type="text" style={{ padding: '0 6px', height: 20 }} onClick={props.onModels}>
+            <Button size="small" type="text" style={{ padding: '0 6px', height: 20 }} onClick={() => props.onModels(ch)}>
               查看
             </Button>
           </>
@@ -302,13 +303,13 @@ function ChannelCard(props: {
 
       {/* 底部操作 */}
       <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 4, borderTop: '1px dashed var(--border-faint)', paddingTop: 10, marginTop: 'auto' }}>
-        <Button size="small" icon={<ExperimentOutlined />} loading={probing} onClick={props.onProbe}>
+        <Button size="small" icon={<ExperimentOutlined />} loading={probing} onClick={() => props.onProbe(ch)}>
           探测
         </Button>
-        <Button size="small" type="text" onClick={props.onEdit}>
+        <Button size="small" type="text" onClick={() => props.onEdit(ch)}>
           编辑
         </Button>
-        <Popconfirm title="确认删除该渠道？" onConfirm={props.onDelete}>
+        <Popconfirm title="确认删除该渠道？" onConfirm={() => props.onDelete(ch)}>
           <Button size="small" type="text" danger>
             删除
           </Button>
@@ -316,7 +317,7 @@ function ChannelCard(props: {
       </div>
     </div>
   )
-}
+})
 
 /** 渠道管理页。 */
 export default function Channels() {
@@ -403,25 +404,6 @@ export default function Channels() {
     setDrawerOpen(true)
   }
 
-  const openEdit = (ch: Channel) => {
-    setEditing(ch)
-    form.resetFields()
-    setModelOptions(undefined)
-    form.setFieldsValue({
-      name: ch.name,
-      provider: ch.provider,
-      base_url: ch.base_url,
-      api_key: ch.api_key,
-      models: parseCSV(ch.models),
-      native_protocols: nativeProtocolsOf(ch),
-      priority: ch.priority,
-      weight: ch.weight,
-      status: ch.status === 1,
-      remark: ch.remark,
-    })
-    setDrawerOpen(true)
-  }
-
   const submit = async () => {
     try {
       const values = await form.validateFields()
@@ -447,8 +429,10 @@ export default function Channels() {
       }
       setDrawerOpen(false)
       void load()
-    } catch {
-      // 表单校验失败
+    } catch (e) {
+      // validateFields 失败时抛 { errorFields }（错误已在表单内展示）；
+      // 其余为保存失败（重名 / 参数非法 / 网络异常），必须提示，否则抽屉静默不动。
+      if (!(e as { errorFields?: unknown })?.errorFields) message.error((e as Error).message)
     }
   }
 
@@ -492,7 +476,7 @@ export default function Channels() {
     else message.error('复制失败，请手动选择复制')
   }
 
-  const doProbe = async (ch: Channel) => {
+  const doProbe = useCallback(async (ch: Channel) => {
     setProbing(ch.id)
     try {
       const report: ProbeReport = await channelApi.probe(ch.id)
@@ -519,9 +503,9 @@ export default function Channels() {
     } finally {
       setProbing(null)
     }
-  }
+  }, [load, message, notification])
 
-  const toggleStatus = async (ch: Channel) => {
+  const toggleStatus = useCallback(async (ch: Channel) => {
     try {
       await channelApi.update(ch.id, {
         name: ch.name,
@@ -538,19 +522,47 @@ export default function Channels() {
     } catch (e) {
       message.error((e as Error).message)
     }
-  }
+  }, [load, message])
+
+  const openEdit = useCallback((ch: Channel) => {
+    setEditing(ch)
+    form.resetFields()
+    setModelOptions(undefined)
+    form.setFieldsValue({
+      name: ch.name,
+      provider: ch.provider,
+      base_url: ch.base_url,
+      api_key: ch.api_key,
+      models: parseCSV(ch.models),
+      native_protocols: nativeProtocolsOf(ch),
+      priority: ch.priority,
+      weight: ch.weight,
+      status: ch.status === 1,
+      remark: ch.remark,
+    })
+    setDrawerOpen(true)
+  }, [form])
+
+  const showModels = useCallback((ch: Channel) => setModelsChannel(ch), [])
+
+  const removeChannel = useCallback(async (ch: Channel) => {
+    await channelApi.remove(ch.id)
+    message.success('已删除')
+    void load()
+  }, [load, message])
 
   // 客户端过滤（当前页内）：名称 / BaseURL / 模型
   const [keyword, setKeyword] = useState('')
   const kw = keyword.trim().toLowerCase()
-  const filtered = kw
-    ? items.filter(
-        (ch) =>
-          ch.name.toLowerCase().includes(kw) ||
-          ch.base_url.toLowerCase().includes(kw) ||
-          ch.models.toLowerCase().includes(kw),
-      )
-    : items
+  const filtered = useMemo(() => {
+    if (!kw) return items
+    return items.filter(
+      (ch) =>
+        ch.name.toLowerCase().includes(kw) ||
+        ch.base_url.toLowerCase().includes(kw) ||
+        ch.models.toLowerCase().includes(kw),
+    )
+  }, [items, kw])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -601,15 +613,11 @@ export default function Channels() {
                     ch={ch}
                     balance={balances[ch.id]}
                     probing={probing === ch.id}
-                    onProbe={() => void doProbe(ch)}
-                    onEdit={() => openEdit(ch)}
-                    onToggle={() => void toggleStatus(ch)}
-                    onModels={() => setModelsChannel(ch)}
-                    onDelete={async () => {
-                      await channelApi.remove(ch.id)
-                      message.success('已删除')
-                      void load()
-                    }}
+                    onProbe={doProbe}
+                    onEdit={openEdit}
+                    onToggle={toggleStatus}
+                    onModels={showModels}
+                    onDelete={removeChannel}
                   />
                 </Col>
               ))}

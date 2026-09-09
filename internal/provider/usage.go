@@ -133,8 +133,13 @@ type StreamUsageParser interface {
 	Feed(data []byte) error
 	// Usage 若上游已报告 usage 则返回 true。
 	Usage() (Usage, bool)
-	// Text 累积的输出文本（估算兜底用）。
+	// Text 累积的输出文本（不含工具调用参数；估算兜底用）。
 	Text() string
+	// ArgsText 累积的工具调用参数 JSON 串（估算兜底用）。
+	ArgsText() string
+	// FinishReason 上游流中报告的结束原因（如 stop/length/end_turn/max_tokens）；
+	// 上游未报告时为空串。
+	FinishReason() string
 }
 
 // NewStreamParser 按上游协议构造流式解析器。
@@ -153,6 +158,8 @@ type openaiStreamParser struct {
 	usage    Usage
 	hasUsage bool
 	text     strings.Builder
+	args     strings.Builder
+	finish   string
 }
 
 func (p *openaiStreamParser) Feed(data []byte) error {
@@ -162,8 +169,14 @@ func (p *openaiStreamParser) Feed(data []byte) error {
 		Delta   string         `json:"delta"`
 		Choices []struct {
 			Delta struct {
-				Content string `json:"content"`
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					Function struct {
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
 			} `json:"delta"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Response *struct {
 			Usage *upstreamUsage `json:"usage"`
@@ -172,13 +185,22 @@ func (p *openaiStreamParser) Feed(data []byte) error {
 	if err := json.Unmarshal(data, &chunk); err != nil {
 		return nil // 非法块直接跳过，不影响转发
 	}
-	// chat/completions: choices[].delta.content
+	// chat/completions: choices[].delta.content（工具参数单独累积，不混入文本）
 	for _, ch := range chunk.Choices {
 		p.text.WriteString(ch.Delta.Content)
+		for _, tc := range ch.Delta.ToolCalls {
+			p.args.WriteString(tc.Function.Arguments)
+		}
+		if ch.FinishReason != "" {
+			p.finish = ch.FinishReason
+		}
 	}
-	// responses: response.output_text.delta
+	// responses: response.output_text.delta / function_call_arguments.delta
 	if chunk.Type == "response.output_text.delta" {
 		p.text.WriteString(chunk.Delta)
+	}
+	if chunk.Type == "response.function_call_arguments.delta" {
+		p.args.WriteString(chunk.Delta)
 	}
 	// responses: response.completed 带 response.usage
 	if chunk.Response != nil && chunk.Response.Usage != nil {
@@ -195,6 +217,8 @@ func (p *openaiStreamParser) Feed(data []byte) error {
 
 func (p *openaiStreamParser) Usage() (Usage, bool) { return p.usage, p.hasUsage }
 func (p *openaiStreamParser) Text() string         { return p.text.String() }
+func (p *openaiStreamParser) ArgsText() string     { return p.args.String() }
+func (p *openaiStreamParser) FinishReason() string { return p.finish }
 
 // anthropicStreamParser 解析 messages 流式事件：
 // message_start(input_tokens/cache_read) / content_block_delta(text) / message_delta(output_tokens)。
@@ -202,13 +226,18 @@ type anthropicStreamParser struct {
 	usage    Usage
 	hasUsage bool
 	text     strings.Builder
+	args     strings.Builder
+	finish   string
 }
 
 func (p *anthropicStreamParser) Feed(data []byte) error {
 	var ev struct {
 		Type  string `json:"type"`
 		Delta struct {
-			Text string `json:"text"`
+			Text        string `json:"text"`
+			Type        string `json:"type"`
+			PartialJSON string `json:"partial_json"`
+			StopReason  string `json:"stop_reason"`
 		} `json:"delta"`
 		Message *struct {
 			Usage *upstreamUsage `json:"usage"`
@@ -221,6 +250,7 @@ func (p *anthropicStreamParser) Feed(data []byte) error {
 	switch ev.Type {
 	case "content_block_delta":
 		p.text.WriteString(ev.Delta.Text)
+		p.args.WriteString(ev.Delta.PartialJSON) // input_json_delta 参数增量单独累积
 	case "message_start":
 		if ev.Message != nil && ev.Message.Usage != nil {
 			u := ev.Message.Usage.toUsage()
@@ -230,6 +260,9 @@ func (p *anthropicStreamParser) Feed(data []byte) error {
 			p.hasUsage = true
 		}
 	case "message_delta":
+		if ev.Delta.StopReason != "" {
+			p.finish = ev.Delta.StopReason
+		}
 		if ev.Usage != nil {
 			u := ev.Usage.toUsage()
 			p.usage.CompletionTokens = u.CompletionTokens
@@ -247,4 +280,8 @@ func (p *anthropicStreamParser) Usage() (Usage, bool) {
 	u := p.usage.Normalize()
 	return u, p.hasUsage
 }
-func (p *anthropicStreamParser) Text() string { return p.text.String() }
+func (p *anthropicStreamParser) Text() string     { return p.text.String() }
+func (p *anthropicStreamParser) ArgsText() string { return p.args.String() }
+func (p *anthropicStreamParser) FinishReason() string {
+	return p.finish
+}

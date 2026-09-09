@@ -87,6 +87,7 @@ func main() {
 	keyRepo := repository.NewAPIKeyRepository(db)
 	logRepo := repository.NewRequestLogRepository(db)
 	customRepo := repository.NewCustomModelRepository(db)
+	sessionHeaderRepo := repository.NewSessionHeaderConfigRepo(db)
 	prober := provider.NewProber(time.Duration(cfg.Gateway.UpstreamTimeout) * time.Second)
 
 	channelSvc := service.NewChannelService(chRepo, prober, bus)
@@ -97,6 +98,11 @@ func main() {
 	statsSvc := service.NewStatsService(logRepo)
 	modelSvc := service.NewModelService(logRepo, chRepo, customRepo)
 	customSvc := service.NewCustomModelService(customRepo)
+	sessionHeaderSvc := service.NewSessionHeaderConfigService(sessionHeaderRepo)
+	// 种子化默认会话标识（X-Session-Id）：表为空时写入，保证升级后行为不变
+	if err := sessionHeaderSvc.EnsureDefaults(context.Background()); err != nil {
+		log.Warn("种子化会话标识配置失败", logger.Err(err))
+	}
 	exec := gateway.NewExecutor(chRepo, logRepo, bus, time.Duration(cfg.Gateway.UpstreamTimeout)*time.Second)
 	exec.SetCustomModels(customRepo)
 	throughput := gateway.NewThroughput(bus, 500*time.Millisecond, 5*time.Second)
@@ -121,17 +127,20 @@ func main() {
 	// 路由
 	engine := gin.New()
 	deps := &router.Deps{
-		Cfg:          cfg,
-		Channels:     admin.NewChannelHandler(channelSvc),
-		CustomModels: admin.NewCustomModelHandler(customSvc),
-		Models:       admin.NewModelHandler(modelSvc),
-		Keys:         admin.NewKeyHandler(keySvc),
-		Logs:         admin.NewLogHandler(logSvc),
-		Stats:        admin.NewStatsHandler(statsSvc),
-		Cleanup:      admin.NewCleanupHandler(retSvc),
-		WS:           admin.NewWSHandler(hub),
-		Gateway:      gwhandler.NewHandler(exec, keySvc, cfg.Gateway.RequireKey, cfg.Gateway.MaxBodyBytes),
+		Cfg:            cfg,
+		Channels:       admin.NewChannelHandler(channelSvc),
+		CustomModels:   admin.NewCustomModelHandler(customSvc),
+		Models:         admin.NewModelHandler(modelSvc),
+		Keys:           admin.NewKeyHandler(keySvc),
+		Logs:           admin.NewLogHandler(logSvc),
+		Stats:          admin.NewStatsHandler(statsSvc),
+		Cleanup:        admin.NewCleanupHandler(retSvc),
+		WS:             admin.NewWSHandler(hub),
+		SessionHeaders: admin.NewSessionHeaderConfigHandler(sessionHeaderSvc),
+		Gateway:        gwhandler.NewHandler(exec, keySvc, cfg.Gateway.RequireKey, cfg.Gateway.MaxBodyBytes),
 	}
+	// 网关按配置的会话 Header 名单提取会话标识（默认 X-Session-Id + 自定义扩展）
+	deps.Gateway.SetSessionHeaders(sessionHeaderSvc)
 	if web.Ready() {
 		deps.WebFS = web.FS()
 		log.Info("前端产物已内嵌，SPA 托管启用")

@@ -1,6 +1,6 @@
 /** 统计数据 -> 图表配置的纯转换函数（便于 Vitest 覆盖）。 */
 import type { RequestLog } from '../api/log'
-import type { GroupStat, ModelDayPoint, Summary, TrendPoint } from '../api/stats'
+import type { GroupStat, LiveSession, ModelDayPoint, Summary, TrendPoint } from '../api/stats'
 
 export interface SeriesPoint {
   date: string
@@ -318,7 +318,9 @@ export function toDonut(series: { name: string; values: number[] }[], top = 5): 
 export interface SessionGroup {
   key: string
   sessionId: string // '' = 无会话标识的散行（单次请求）
-  requests: RequestLog[] // 新→旧，与输入一致
+  requests: RequestLog[] // 已加载的请求明细（后端聚合行可能尚未展开，此时为空）
+  count: number // 会话请求总数（后端全量口径 + 未落库实时行）
+  loaded: boolean // 明细是否已加载（false 时展开需按 session_id 拉取）
   firstAt: string // 组内最早请求时间
   lastAt: string // 组内最新请求时间
   totalTokens: number
@@ -331,6 +333,7 @@ export interface SessionGroup {
   models: string[] // 去重，保持出现顺序
   channels: string[]
   protocols: string[]
+  modes: string[] // 转发模式去重（native_passthrough / converted）
   userAgent: string // 首个非空 UA
   keyName: string
 }
@@ -350,6 +353,8 @@ export function groupBySession(rows: RequestLog[]): SessionGroup[] {
         key,
         sessionId: sid,
         requests: [],
+        count: 0,
+        loaded: true,
         firstAt: r.created_at,
         lastAt: r.created_at,
         totalTokens: 0,
@@ -362,6 +367,7 @@ export function groupBySession(rows: RequestLog[]): SessionGroup[] {
         models: [],
         channels: [],
         protocols: [],
+        modes: [],
         userAgent: '',
         keyName: '',
       }
@@ -370,6 +376,7 @@ export function groupBySession(rows: RequestLog[]): SessionGroup[] {
       g.firstAt = r.created_at
     }
     g.requests.push(r)
+    g.count += 1
     g.totalTokens += r.total_tokens
     g.completionTokens += r.completion_tokens
     g.promptTokens += r.prompt_tokens
@@ -380,8 +387,183 @@ export function groupBySession(rows: RequestLog[]): SessionGroup[] {
     if (r.model && !g.models.includes(r.model)) g.models.push(r.model)
     if (r.channel_name && !g.channels.includes(r.channel_name)) g.channels.push(r.channel_name)
     if (r.protocol && !g.protocols.includes(r.protocol)) g.protocols.push(r.protocol)
+    if (r.forward_mode && !g.modes.includes(r.forward_mode)) g.modes.push(r.forward_mode)
     if (!g.userAgent && r.user_agent) g.userAgent = r.user_agent
     if (!g.keyName && r.key_name) g.keyName = r.key_name
   }
   return [...groups.values()]
+}
+
+/**
+ * 后端会话聚合 + 未落库实时行 + 已展开明细 -> 展示用会话组。
+ * 后端已按 session_id 对全量历史求和（合计准确）；这里只把 WS 推送中「尚未落库」
+ * 的进行中行叠加到对应会话，避免重复计数（已完成行后端已计入）。
+ * details 为展开时按 session_id 拉取的完整明细，按组键缓存。
+ * maxGroups 限制最终展示组数（新会话可能临时超出后端返回的组数上限）。
+ */
+export function mergeSessionViews(
+  views: LiveSession[],
+  pending: RequestLog[],
+  details: Record<string, RequestLog[]> = {},
+  maxGroups = 0,
+): SessionGroup[] {
+  const groups = new Map<string, SessionGroup>()
+  const order: string[] = []
+
+  for (const v of views) {
+    const detail = details[v.key]
+    const g: SessionGroup = {
+      key: v.key,
+      sessionId: v.session_id,
+      // 散行（requests=1）后端直接带回整行；其余按需展开时由 details 提供
+      requests: detail ?? (v.last_request ? [v.last_request] : []),
+      count: v.requests,
+      loaded: !!(detail || v.last_request),
+      firstAt: v.first_at,
+      lastAt: v.last_at,
+      totalTokens: v.total_tokens,
+      completionTokens: v.completion_tokens,
+      promptTokens: v.prompt_tokens,
+      cachedTokens: v.cached_tokens,
+      totalMs: v.total_ms,
+      running: 0,
+      errors: v.errors,
+      models: [...(v.models ?? [])],
+      channels: [...(v.channels ?? [])],
+      protocols: [...(v.protocols ?? [])],
+      modes: [...(v.modes ?? [])],
+      userAgent: v.user_agent,
+      keyName: v.key_name,
+    }
+    groups.set(g.key, g)
+    order.push(g.key)
+  }
+
+  // 叠加尚未落库的实时行（有 id 的行已计入后端聚合，跳过）。
+  // pending 为「新→旧」顺序，先收集再整批前插，保证展开面板里进行中行仍排在最新端。
+  const fresh = new Map<string, RequestLog[]>()
+  for (const r of pending) {
+    if (r.id) continue
+    const sid = (r.session_id ?? '').trim()
+    const key = sid ? `sess:${sid}` : `req:${r.req_id || r.created_at}`
+    let g = groups.get(key)
+    if (!g) {
+      g = {
+        key,
+        sessionId: sid,
+        requests: [],
+        count: 0,
+        loaded: true,
+        firstAt: r.created_at,
+        lastAt: r.created_at,
+        totalTokens: 0,
+        completionTokens: 0,
+        promptTokens: 0,
+        cachedTokens: 0,
+        totalMs: 0,
+        running: 0,
+        errors: 0,
+        models: [],
+        channels: [],
+        protocols: [],
+        modes: [],
+        userAgent: '',
+        keyName: '',
+      }
+      groups.set(key, g)
+      order.unshift(key) // 新会话置顶
+    }
+    const list = fresh.get(key)
+    if (list) list.push(r)
+    else fresh.set(key, [r])
+    g.count += 1
+    g.running += 1
+    g.totalTokens += r.total_tokens
+    g.completionTokens += r.completion_tokens
+    g.promptTokens += r.prompt_tokens
+    g.cachedTokens += r.cached_tokens
+    g.totalMs += r.duration_ms
+    if (r.error) g.errors += 1
+    if (r.model && !g.models.includes(r.model)) g.models.push(r.model)
+    if (r.channel_name && !g.channels.includes(r.channel_name)) g.channels.push(r.channel_name)
+    if (r.protocol && !g.protocols.includes(r.protocol)) g.protocols.push(r.protocol)
+    if (r.forward_mode && !g.modes.includes(r.forward_mode)) g.modes.push(r.forward_mode)
+    if (!g.userAgent && r.user_agent) g.userAgent = r.user_agent
+    if (!g.keyName && r.key_name) g.keyName = r.key_name
+    if (Date.parse(r.created_at) < Date.parse(g.firstAt)) g.firstAt = r.created_at
+    if (Date.parse(r.created_at) > Date.parse(g.lastAt)) g.lastAt = r.created_at
+  }
+  for (const [key, rows] of fresh) {
+    const g = groups.get(key)!
+    g.requests = [...rows, ...g.requests]
+  }
+
+  const out = order.map((k) => groups.get(k)!)
+  return maxGroups > 0 ? out.slice(0, maxGroups) : out
+}
+
+/** 会话标识：与 groupBySession 的分组键保持一致（sid 优先，无标识按散行）。 */
+function liveRowKey(r: RequestLog): string {
+  const sid = (r.session_id ?? '').trim()
+  return sid ? `sess:${sid}` : `req:${r.id || r.req_id || r.created_at}`
+}
+
+/**
+ * 实时流裁剪：超出容量时从最旧端"整组"移除会话（或无标识散行），
+ * 保证同一会话的行要么全保留、要么全移除——聚合出的请求数 / Token 合计
+ * 不会因截断而残缺（rows 为新→旧，容量 max）。
+ * 例外：单一会话自身超过容量时无法避免切分，退化为保留其最新 max 行。
+ */
+export function trimLiveRows(rows: RequestLog[], max: number): RequestLog[] {
+  if (max <= 0) return []
+  if (rows.length <= max) return rows
+  const counts = new Map<string, number>()
+  for (const r of rows) counts.set(liveRowKey(r), (counts.get(liveRowKey(r)) ?? 0) + 1)
+  let excess = rows.length - max
+  const drop = new Set<string>()
+  const newestKey = liveRowKey(rows[0])
+  // 从最旧端（数组尾部）逐组移除，直到行数不超容量；含最新行的组永不移除
+  for (let i = rows.length - 1; i >= 0 && excess > 0; i--) {
+    const key = liveRowKey(rows[i])
+    if (key === newestKey || drop.has(key)) continue
+    drop.add(key)
+    excess -= counts.get(key) ?? 0
+  }
+  const kept = rows.filter((r) => !drop.has(liveRowKey(r)))
+  return kept.length > max ? kept.slice(0, max) : kept
+}
+
+/** 实时流事件阶段：started = 受理（运行中行），completed = 完成（按 req_id 原位替换）。 */
+export type LivePhase = 'started' | 'completed'
+
+/**
+ * 单条实时事件合并（不做容量裁剪，由调用方统一裁剪）。
+ * 幂等保护：completed 偶发先于 started 到达（或重复推送）时以先到者为准，避免行错乱。
+ */
+export function mergeLiveEvent(prev: RequestLog[], row: RequestLog, phase: LivePhase): RequestLog[] {
+  if (phase === 'started') {
+    if (row.req_id && prev.some((x) => x.req_id === row.req_id)) return prev
+    return [{ ...row }, ...prev]
+  }
+  if (row.req_id && prev.some((x) => x.req_id === row.req_id && !!x.id)) return prev
+  const idx = row.req_id ? prev.findIndex((x) => x.req_id === row.req_id && !x.id) : -1
+  if (idx < 0) return [row, ...prev]
+  const next = [...prev]
+  next[idx] = row
+  return next
+}
+
+/**
+ * 批量合并实时事件后再统一裁剪：一次裁剪替代逐条裁剪（突发流量下省去 O(k·n) 的重复扫描）。
+ * events 按到达先后排列，合并后仍保持新→旧顺序。
+ */
+export function mergeLiveEvents(
+  prev: RequestLog[],
+  events: { row: RequestLog; phase: LivePhase }[],
+  max: number,
+): RequestLog[] {
+  if (events.length === 0) return prev
+  let next = prev
+  for (const e of events) next = mergeLiveEvent(next, e.row, e.phase)
+  return trimLiveRows(next, max)
 }

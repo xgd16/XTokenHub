@@ -96,8 +96,7 @@ export interface ChannelBalance {
   fetched_at?: string
 }
 
-export const channelApi = {
-  list: (params?: { page?: number; per_page?: number }) =>
+export const channelApi = {  list: (params?: { page?: number; per_page?: number }) =>
     request<PageData<Channel>>({ url: '/api/v1/channels', method: 'GET', params }),
   get: (id: number) => request<Channel>({ url: `/api/v1/channels/${id}`, method: 'GET' }),
   create: (input: ChannelInput) =>

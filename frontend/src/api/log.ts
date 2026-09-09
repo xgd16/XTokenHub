@@ -35,6 +35,7 @@ export interface LogQuery {
   channel_id?: number
   key_id?: number
   model?: string
+  session_id?: string
   stream?: boolean
   error_only?: boolean
   hours?: number

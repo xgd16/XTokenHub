@@ -82,7 +82,9 @@ export default function ModelTrendChart({ data, height = 260, ariaLabel = '每�
     const rect = svgRef.current.getBoundingClientRect()
     const vx = ((e.clientX - rect.left) / rect.width) * W
     const i = Math.round(((vx - PAD.l) / geo.iw) * (geo.n - 1))
-    setHoverIdx(Math.max(0, Math.min(geo.n - 1, i)))
+    const next = Math.max(0, Math.min(geo.n - 1, i))
+    // mousemove 可达上百次/秒：同一桶内移动时保持原引用，避免整张 SVG 无谓重渲染
+    setHoverIdx((prev) => (prev === next ? prev : next))
   }
 
   const hoverRows =

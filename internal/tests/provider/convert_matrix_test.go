@@ -224,7 +224,7 @@ func TestConvertRequestWireShapes(t *testing.T) {
 }
 
 func TestParseRequestRoleAndContentNormalization(t *testing.T) {
-	// CC：system/developer 归并为 system（\n 连接），未知角色归为 user，
+	// CC：system/developer 归并为 system（\n 连接），tool 消息缺 tool_call_id 跳过，
 	// content parts 数组以 \n 拼接
 	conv, _, err := provider.ParseRequest(model.ProtocolChatCompletions, []byte(
 		`{"messages":[`+
@@ -238,9 +238,8 @@ func TestParseRequestRoleAndContentNormalization(t *testing.T) {
 	if conv.System != "a\nb" {
 		t.Errorf("system 合并: %q", conv.System)
 	}
-	if len(conv.Messages) != 2 ||
-		conv.Messages[0].Role != provider.RoleUser || conv.Messages[0].Text != "x" ||
-		conv.Messages[1].Role != provider.RoleUser || conv.Messages[1].Text != "p1\np2" {
+	if len(conv.Messages) != 1 ||
+		conv.Messages[0].Role != provider.RoleUser || conv.Messages[0].Text != "p1\np2" {
 		t.Errorf("角色/内容归一: %+v", conv.Messages)
 	}
 
@@ -286,7 +285,7 @@ const upstreamOpenAIResp = `{"id":"chatcmpl-1","model":"gpt-up","choices":[` +
 	`"usage":{"prompt_tokens":12,"completion_tokens":7,"total_tokens":19,"prompt_tokens_details":{"cached_tokens":6}}}`
 
 const upstreamAnthropicResp = `{"id":"msg_1","type":"message","role":"assistant","model":"claude-up",` +
-	`"content":[{"type":"text","text":"你"},{"type":"text","text":"好"},{"type":"tool_use","id":"t1","name":"f","input":{}}],` +
+	`"content":[{"type":"text","text":"你"},{"type":"text","text":"好"}],` +
 	`"stop_reason":"max_tokens",` +
 	`"usage":{"input_tokens":33,"output_tokens":8,"cache_creation_input_tokens":4,"cache_read_input_tokens":11}}`
 
@@ -344,7 +343,12 @@ func assertClientResponseShape(t *testing.T, in model.Protocol, m map[string]any
 			t.Errorf("[messages] usage: %v", usage)
 		}
 	case model.ProtocolResponses:
-		if m["object"] != "response" || m["status"] != "completed" || m["id"] != wantID {
+		// finish 为 length/max_tokens 时官方语义是 incomplete（截断），否则 completed
+		wantStatus := "completed"
+		if finish == "length" || finish == "max_tokens" {
+			wantStatus = "incomplete"
+		}
+		if m["object"] != "response" || m["status"] != wantStatus || m["id"] != wantID {
 			t.Errorf("[responses] 头部: %v", m)
 		}
 		output := toArr(t, m["output"])
@@ -352,7 +356,7 @@ func assertClientResponseShape(t *testing.T, in model.Protocol, m map[string]any
 			t.Fatalf("[responses] output: %v", output)
 		}
 		item := toMap(t, output[0])
-		if item["type"] != "message" || item["role"] != "assistant" || item["status"] != "completed" {
+		if item["type"] != "message" || item["role"] != "assistant" || item["status"] != wantStatus {
 			t.Errorf("[responses] output item: %v", item)
 		}
 		parts := toArr(t, item["content"])
@@ -428,11 +432,11 @@ func TestConvertResponseFinishReasonMapping(t *testing.T) {
 		{model.ProtocolChatCompletions, "length", model.ProtocolMessages, "max_tokens"},
 		{model.ProtocolChatCompletions, "", model.ProtocolChatCompletions, "stop"},
 		{model.ProtocolChatCompletions, "", model.ProtocolMessages, "end_turn"},
-		{model.ProtocolChatCompletions, "tool_calls", model.ProtocolMessages, "end_turn"},
+		{model.ProtocolChatCompletions, "tool_calls", model.ProtocolMessages, "tool_use"},
 		{model.ProtocolMessages, "max_tokens", model.ProtocolChatCompletions, "max_tokens"},
 		{model.ProtocolMessages, "max_tokens", model.ProtocolMessages, "max_tokens"},
-		{model.ProtocolMessages, "end_turn", model.ProtocolChatCompletions, "end_turn"},
-		{model.ProtocolMessages, "stop_sequence", model.ProtocolChatCompletions, "stop_sequence"},
+		{model.ProtocolMessages, "end_turn", model.ProtocolChatCompletions, "stop"},
+		{model.ProtocolMessages, "stop_sequence", model.ProtocolChatCompletions, "stop"},
 		{model.ProtocolMessages, "stop_sequence", model.ProtocolMessages, "end_turn"},
 		{model.ProtocolMessages, "", model.ProtocolChatCompletions, "stop"},
 		{model.ProtocolMessages, "", model.ProtocolMessages, "end_turn"},
@@ -557,6 +561,10 @@ func assertChatClientStream(t *testing.T, feed, done [][]byte, wantText, wantID,
 		if m["id"] != wantID || m["model"] != wantModel {
 			t.Errorf("chunk 头部 id=%v model=%v, want %q/%q", m["id"], m["model"], wantID, wantModel)
 		}
+		// created 为官方 SDK 必填字段（缺失时客户端解析失败）
+		if _, ok := m["created"]; !ok {
+			t.Errorf("chunk 缺 created 必填字段: %v", m)
+		}
 		ch := toMap(t, toArr(t, m["choices"])[0])
 		delta := toMap(t, ch["delta"])
 		if s, ok := delta["content"]; ok {
@@ -617,6 +625,15 @@ func assertAnthropicClientStream(t *testing.T, feed, done [][]byte, wantText str
 			if msg["type"] != "message" || msg["role"] != "assistant" {
 				t.Errorf("message_start: %v", msg)
 			}
+			// 官方 SDK 严格校验 message.id/model/usage 为必填
+			for _, k := range []string{"id", "model", "usage"} {
+				if _, ok := msg[k]; !ok {
+					t.Errorf("message_start.message 缺必填字段 %s: %v", k, msg)
+				}
+			}
+			if msg["id"] == "" {
+				t.Errorf("message_start.message.id 不应为空: %v", msg)
+			}
 		case "content_block_start":
 			blk := toMap(t, m["content_block"])
 			if m["index"] != float64(0) || blk["type"] != "text" {
@@ -650,8 +667,13 @@ func assertAnthropicClientStream(t *testing.T, feed, done [][]byte, wantText str
 		}
 	}
 	md := toObj(t, done[1])
-	if got := toMap(t, md["usage"])["output_tokens"]; got != float64(u.CompletionTokens) {
+	mu := toMap(t, md["usage"])
+	if got := mu["output_tokens"]; got != float64(u.CompletionTokens) {
 		t.Errorf("message_delta output_tokens = %v, want %d", got, u.CompletionTokens)
+	}
+	// chat 上游的 prompt_tokens 流末才到：message_start 已发出，须在 message_delta 补报
+	if got := mu["input_tokens"]; got != float64(u.PromptTokens) {
+		t.Errorf("message_delta input_tokens = %v, want %d", got, u.PromptTokens)
 	}
 	if got := toMap(t, md["delta"])["stop_reason"]; got != "end_turn" {
 		t.Errorf("stop_reason = %v", got)
@@ -659,8 +681,10 @@ func assertAnthropicClientStream(t *testing.T, feed, done [][]byte, wantText str
 }
 
 // assertResponsesClientStream 校验 responses 客户端的全流：
-// 事件顺序、sequence_number 连续递增、item_id 归属、completed 携带 usage。
-func assertResponsesClientStream(t *testing.T, feed, done [][]byte, wantText, wantModel string, u provider.Usage) {
+// 事件顺序、sequence_number 连续递增、item_id 归属、completed 携带 usage，
+// 以及官方 SDK 严格校验的必填字段（created_at/parallel_tool_calls/tool_choice/tools、
+// delta 的 logprobs、usage 明细）。
+func assertResponsesClientStream(t *testing.T, feed, done [][]byte, wantText, wantID, wantModel string, u provider.Usage) {
 	t.Helper()
 	all := append(append([][]byte{}, feed...), done...)
 	var types []string
@@ -681,12 +705,13 @@ func assertResponsesClientStream(t *testing.T, feed, done [][]byte, wantText, wa
 			if resp["status"] != "in_progress" || resp["object"] != "response" {
 				t.Errorf("%s response: %v", typ, resp)
 			}
-			if wantModel != "" {
-				if resp["model"] != wantModel {
-					t.Errorf("response model = %v, want %q", resp["model"], wantModel)
+			if resp["model"] != wantModel {
+				t.Errorf("response model = %v, want %q", resp["model"], wantModel)
+			}
+			for _, k := range []string{"created_at", "parallel_tool_calls", "tool_choice", "tools"} {
+				if _, ok := resp[k]; !ok {
+					t.Errorf("%s response 缺必填字段 %s", typ, k)
 				}
-			} else if _, ok := resp["model"]; ok {
-				t.Error("上游未报告 model 时不应携带 model 字段")
 			}
 			if got := toArr(t, resp["output"]); len(got) != 0 {
 				t.Errorf("初始 output 应为空: %v", got)
@@ -714,14 +739,20 @@ func assertResponsesClientStream(t *testing.T, feed, done [][]byte, wantText, wa
 			if m["item_id"] != "msg_0" {
 				t.Errorf("delta item_id: %v", m["item_id"])
 			}
+			if _, ok := m["logprobs"]; !ok {
+				t.Errorf("delta 缺 logprobs 必填字段: %v", m)
+			}
 			text.WriteString(m["delta"].(string))
 		case "response.output_text.done":
 			if m["text"] != wantText {
 				t.Errorf("output_text.done 应携带全量原文: %v vs %q", m["text"], wantText)
 			}
+			if _, ok := m["logprobs"]; !ok {
+				t.Errorf("output_text.done 缺 logprobs 必填字段: %v", m)
+			}
 		case "response.content_part.done":
 			part := toMap(t, m["part"])
-			if part["type"] != "output_text" || part["text"] != strings.TrimSpace(wantText) {
+			if part["type"] != "output_text" || part["text"] != wantText {
 				t.Errorf("content_part.done: %v", part)
 			}
 		case "response.output_item.done":
@@ -730,12 +761,12 @@ func assertResponsesClientStream(t *testing.T, feed, done [][]byte, wantText, wa
 				t.Errorf("output_item.done: %v", item)
 			}
 			part := toMap(t, toArr(t, item["content"])[0])
-			if part["type"] != "output_text" || part["text"] != strings.TrimSpace(wantText) {
+			if part["type"] != "output_text" || part["text"] != wantText {
 				t.Errorf("item 完成文本: %v", part)
 			}
 		case "response.completed":
 			resp := toMap(t, m["response"])
-			if resp["id"] != "resp_0" || resp["status"] != "completed" || resp["object"] != "response" {
+			if resp["id"] != wantID || resp["status"] != "completed" || resp["object"] != "response" {
 				t.Errorf("completed response: %v", resp)
 			}
 			output := toArr(t, resp["output"])
@@ -748,8 +779,15 @@ func assertResponsesClientStream(t *testing.T, feed, done [][]byte, wantText, wa
 				usage["total_tokens"] != float64(u.TotalTokens) {
 				t.Errorf("completed usage: %v (want %+v)", usage, u)
 			}
-			if got := toMap(t, usage["input_tokens_details"])["cached_tokens"]; got != float64(u.CachedTokens) {
-				t.Errorf("completed cached_tokens: %v", got)
+			details := toMap(t, usage["input_tokens_details"])
+			if details["cached_tokens"] != float64(u.CachedTokens) {
+				t.Errorf("completed cached_tokens: %v", details)
+			}
+			if _, ok := details["cache_write_tokens"]; !ok {
+				t.Errorf("usage 缺 cache_write_tokens 必填字段: %v", details)
+			}
+			if _, ok := usage["output_tokens_details"]; !ok {
+				t.Errorf("usage 缺 output_tokens_details 必填字段: %v", usage)
 			}
 		default:
 			t.Errorf("未知事件类型 %s", typ)
@@ -792,8 +830,8 @@ func TestStreamConvertFullMatrix(t *testing.T) {
 			usage: provider.Usage{PromptTokens: 11, CompletionTokens: 2, TotalTokens: 13, CachedTokens: 3, Source: provider.UsageFromUpstream},
 		},
 		model.ProtocolMessages: {
-			events: upAnthropicStreamEvents,
-			usage:  provider.Usage{PromptTokens: 11, CompletionTokens: 2, TotalTokens: 13, CachedTokens: 3, CacheWriteTokens: 1, Source: provider.UsageFromUpstream},
+			events: upAnthropicStreamEvents, id: "msg_1",
+			usage: provider.Usage{PromptTokens: 11, CompletionTokens: 2, TotalTokens: 13, CachedTokens: 3, CacheWriteTokens: 1, Source: provider.UsageFromUpstream},
 		},
 	}
 	for _, up := range []model.Protocol{model.ProtocolChatCompletions, model.ProtocolMessages} {
@@ -826,7 +864,11 @@ func TestStreamConvertFullMatrix(t *testing.T) {
 			case model.ProtocolMessages:
 				assertAnthropicClientStream(t, feed, done, "你好", src.usage)
 			case model.ProtocolResponses:
-				assertResponsesClientStream(t, feed, done, "你好", src.model, src.usage)
+				wantID := src.id
+				if wantID == "" {
+					wantID = "resp_0"
+				}
+				assertResponsesClientStream(t, feed, done, "你好", wantID, src.model, src.usage)
 			}
 		}
 	}
@@ -930,5 +972,105 @@ func TestConversationFullText(t *testing.T) {
 	var empty provider.Conversation
 	if empty.FullText() != "" {
 		t.Error("空会话 FullText 应为空串")
+	}
+}
+
+func TestConvertResponseToolCalls(t *testing.T) {
+	// chat 上游 tool_calls -> 三种客户端
+	chatUp := mustJSON(t, map[string]any{
+		"id": "chatcmpl-9", "model": "gpt-up",
+		"choices": []map[string]any{{
+			"index": 0,
+			"message": map[string]any{
+				"role": "assistant", "content": nil,
+				"tool_calls": []map[string]any{{
+					"id": "call_1", "type": "function",
+					"function": map[string]any{"name": "get_weather", "arguments": `{"city":"北京"}`},
+				}},
+			},
+			"finish_reason": "tool_calls",
+		}},
+		"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+	})
+	// anthropic 上游 tool_use -> 三种客户端
+	msUp := mustJSON(t, map[string]any{
+		"id": "msg_9", "type": "message", "role": "assistant", "model": "claude-up",
+		"content": []map[string]any{
+			{"type": "text", "text": "查一下"},
+			{"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": map[string]any{"city": "北京"}},
+		},
+		"stop_reason": "tool_use",
+		"usage":       map[string]any{"input_tokens": 10, "output_tokens": 5},
+	})
+	for _, tc := range []struct {
+		up   model.Protocol
+		body []byte
+	}{
+		{model.ProtocolChatCompletions, chatUp},
+		{model.ProtocolMessages, msUp},
+	} {
+		// chat 客户端
+		body, _, err := provider.ConvertResponse(model.ProtocolChatCompletions, tc.up, tc.body, "m")
+		if err != nil {
+			t.Fatalf("%s -> chat: %v", tc.up, err)
+		}
+		om := toObj(t, body)
+		ch := toMap(t, toArr(t, om["choices"])[0])
+		if ch["finish_reason"] != "tool_calls" {
+			t.Errorf("%s -> chat finish_reason = %v", tc.up, ch["finish_reason"])
+		}
+		msg := toMap(t, ch["message"])
+		tcs := toArr(t, msg["tool_calls"])
+		if len(tcs) != 1 {
+			t.Fatalf("%s -> chat tool_calls: %v", tc.up, msg)
+		}
+		fn := toMap(t, toMap(t, tcs[0])["function"])
+		if fn["name"] != "get_weather" || fn["arguments"] != `{"city":"北京"}` {
+			t.Errorf("%s -> chat tool_call: %v", tc.up, fn)
+		}
+		// messages 客户端
+		body, _, err = provider.ConvertResponse(model.ProtocolMessages, tc.up, tc.body, "m")
+		if err != nil {
+			t.Fatalf("%s -> messages: %v", tc.up, err)
+		}
+		om = toObj(t, body)
+		if om["stop_reason"] != "tool_use" {
+			t.Errorf("%s -> messages stop_reason = %v", tc.up, om["stop_reason"])
+		}
+		var sawToolUse bool
+		for _, b := range toArr(t, om["content"]) {
+			blk := toMap(t, b)
+			if blk["type"] == "tool_use" {
+				sawToolUse = true
+				if blk["name"] != "get_weather" || toMap(t, blk["input"])["city"] != "北京" {
+					t.Errorf("%s -> messages tool_use: %v", tc.up, blk)
+				}
+			}
+		}
+		if !sawToolUse {
+			t.Errorf("%s -> messages 缺 tool_use 块: %v", tc.up, om["content"])
+		}
+		// responses 客户端
+		body, _, err = provider.ConvertResponse(model.ProtocolResponses, tc.up, tc.body, "m")
+		if err != nil {
+			t.Fatalf("%s -> responses: %v", tc.up, err)
+		}
+		om = toObj(t, body)
+		if om["status"] != "completed" {
+			t.Errorf("%s -> responses status = %v（工具调用属正常完成）", tc.up, om["status"])
+		}
+		var sawFC bool
+		for _, it := range toArr(t, om["output"]) {
+			item := toMap(t, it)
+			if item["type"] == "function_call" {
+				sawFC = true
+				if item["name"] != "get_weather" || item["call_id"] == nil || item["status"] != "completed" {
+					t.Errorf("%s -> responses function_call: %v", tc.up, item)
+				}
+			}
+		}
+		if !sawFC {
+			t.Errorf("%s -> responses 缺 function_call 条目: %v", tc.up, om["output"])
+		}
 	}
 }

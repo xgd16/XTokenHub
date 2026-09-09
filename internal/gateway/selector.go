@@ -19,7 +19,8 @@ type Candidate struct {
 // SelectCandidates 生成渠道候选序列（纯函数）：
 //  1. 过滤：启用状态 && 支持该模型；
 //  2. 原生渠道（native_protocols 含入站协议）排在最前 —— 零转换透传；
-//  3. 其余渠道为转换候选（协议转换兜底，responses 上游除外）；
+//  3. 其余渠道为转换候选（协议转换兜底）；仅声明 responses 的渠道无法承担
+//     转换写入，直接排除（避免运行时才失败）；
 //  4. 同层内按 priority 升序，同 priority 按 weight 加权随机洗牌，保证负载分布。
 //
 // group 非 nil 时为自定义模型组路由：按成员展开（成员模型 × 支持渠道），
@@ -37,7 +38,11 @@ func SelectCandidates(channels []model.Channel, inbound model.Protocol, reqModel
 				native = append(native, *ch)
 				continue
 			}
-			// 转换上游仅支持 chat_completions / messages（responses 上游不提供转换写入）
+			// 转换上游仅支持 chat_completions / messages：渠道若只声明 responses，
+			// 没有可写入的转换目标，排除（否则运行时才报错，白跑一次候选）
+			if ch.Protocols != "" && !ch.IsNative(model.ProtocolChatCompletions) && !ch.IsNative(model.ProtocolMessages) {
+				continue
+			}
 			convertible = append(convertible, *ch)
 		}
 
@@ -71,7 +76,13 @@ func selectGroupCandidates(channels []model.Channel, inbound model.Protocol, gro
 			if ch.Status != model.ChannelEnabled || !ch.SupportsModel(m.Model) {
 				continue
 			}
-			entries = append(entries, groupEntry{member: m, ch: *ch, native: ch.IsNative(inbound)})
+			native := ch.IsNative(inbound)
+			// 同 SelectCandidates：仅声明 responses 的渠道无法承担转换写入
+			if !native && ch.Protocols != "" &&
+				!ch.IsNative(model.ProtocolChatCompletions) && !ch.IsNative(model.ProtocolMessages) {
+				continue
+			}
+			entries = append(entries, groupEntry{member: m, ch: *ch, native: native})
 		}
 	}
 	sort.SliceStable(entries, func(i, j int) bool {
