@@ -57,6 +57,7 @@ final class HubStore {
     private var settings: AppSettings?
     private var activeBase: URL?
     private var started = false
+    private var rebuildTask: Task<Void, Never>?
     private var statsRefreshTask: Task<Void, Never>?
     private var periodicTask: Task<Void, Never>?
     private let maxLiveRows = 50
@@ -65,7 +66,7 @@ final class HubStore {
         guard !started else { return }
         started = true
         self.settings = settings
-        settings.onChange = { [weak self] in self?.rebuildIfNeeded() }
+        settings.onChange = { [weak self] in self?.scheduleRebuild() }
         rebuildIfNeeded()
         periodicTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -91,13 +92,31 @@ final class HubStore {
         Task { await fetchTrend() }
     }
 
+    /// 设置变更防抖:连续输入地址时避免逐字符重连;停顿后真正执行重建。
+    private func scheduleRebuild() {
+        rebuildTask?.cancel()
+        rebuildTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard let self, !Task.isCancelled else { return }
+            self.rebuildIfNeeded()
+        }
+    }
+
     /// 设置变更:仅当服务地址变化时才重建 API 客户端并重连。
     private func rebuildIfNeeded() {
         guard let settings else { return }
-        let base = HubURL.httpBase(settings.baseURLString)
+        let base = HubURL.httpBase(settings.selectedSource.urlString)
         guard base != activeBase else { return }
         activeBase = base
         api = APIClient(baseURL: base)
+
+        // 切换来源:清空上一个服务的统计数据,避免串台
+        summary = nil
+        lifetime = nil
+        trend = []
+        modelTop = []
+        callersTop = []
+        recentRequests = []
 
         socket?.disconnect()
         let sock = HubSocket(url: HubURL.wsBase(base))

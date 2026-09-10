@@ -189,3 +189,16 @@ struct HubURLTests {
         #expect(HubURL.wsBase(URL(string: "https://hub.example.com")!).absoluteString == "wss://hub.example.com/api/v1/ws")
     }
 }
+
+/// 数据来源持久化格式(AppSettings 以 JSON 字符串存入 UserDefaults)。
+struct DataSourceCodableTests {
+    @Test func roundTrips() throws {
+        let sources = [
+            DataSource(name: "本地", urlString: "http://127.0.0.1:9192"),
+            DataSource(name: "远程", urlString: "https://hub.example.com"),
+        ]
+        let data = try JSONEncoder().encode(sources)
+        let list = try JSONDecoder().decode([DataSource].self, from: data)
+        #expect(list == sources)
+    }
+}

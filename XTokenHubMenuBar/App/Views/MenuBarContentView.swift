@@ -44,12 +44,14 @@ struct MenuBarContentView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
+            sourcePicker
             Circle()
                 .fill(statusColor)
                 .frame(width: 8, height: 8)
             Text(statusText)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
             Spacer(minLength: 12)
             if store.activeStreams > 0 {
                 Label("\(store.activeStreams)", systemImage: "waveform")
@@ -60,6 +62,49 @@ struct MenuBarContentView: View {
                 .font(.callout.weight(.semibold).monospacedDigit())
                 .contentTransition(.numericText())
         }
+    }
+
+    // MARK: - 数据来源快速切换
+
+    /// 头部来源菜单:列出全部数据来源,点击即切换(当前项带勾选)。
+    private var sourcePicker: some View {
+        Menu {
+            ForEach(settings.dataSources) { source in
+                Button {
+                    settings.selectSource(source.id)
+                } label: {
+                    if source.id == settings.selectedSourceID {
+                        Label(source.name, systemImage: "checkmark")
+                    } else {
+                        Text(source.name)
+                    }
+                }
+            }
+            if settings.dataSources.count > 1 {
+                Divider()
+                Button {
+                    openSettingsReliably()
+                } label: {
+                    Label("管理数据来源…", systemImage: "gearshape")
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "server.rack")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Text(settings.selectedSource.name)
+                    .font(.footnote.weight(.semibold))
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .menuStyle(.button)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("切换数据来源")
     }
 
     // MARK: - 统计磁贴(对齐 Web 两排卡片)

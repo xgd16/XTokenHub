@@ -2,7 +2,7 @@ APP_NAME  := XTokenHubMenuBar
 PROJECT   := $(APP_NAME).xcodeproj
 SCHEME    := $(APP_NAME)
 BUILD_DIR := .build
-DMG_NAME  ?= $(APP_NAME)-1.0.0.dmg
+DMG_NAME  ?= $(APP_NAME)-1.1.0.dmg
 
 .PHONY: gen build run test icon package clean
 

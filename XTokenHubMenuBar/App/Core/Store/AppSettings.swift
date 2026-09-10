@@ -2,7 +2,14 @@ import Foundation
 import Observation
 import ServiceManagement
 
-/// 用户设置:UserDefaults 持久化,地址变更通过 onChange 通知 HubStore 重连。
+/// 一个数据来源:XTokenHub 服务实例(名称 + 地址)。
+struct DataSource: Codable, Identifiable, Equatable, Sendable {
+    var id: UUID = UUID()
+    var name: String
+    var urlString: String
+}
+
+/// 用户设置:UserDefaults 持久化,数据来源增删与地址变更通过 onChange 通知 HubStore 重连。
 @MainActor
 @Observable
 final class AppSettings {
@@ -28,18 +35,22 @@ final class AppSettings {
     }
 
     private enum Key {
-        static let baseURL = "baseURLString"
+        static let sources = "dataSources"
+        static let selectedSourceID = "selectedSourceID"
+        static let legacyBaseURL = "baseURLString" // 旧版单地址,迁移后移除
         static let metrics = "menuBarMetrics"
         static let legacyMode = "menuBarMode" // 旧版单选模式,迁移后废弃
         static let launchAtLogin = "launchAtLogin"
     }
 
-    var baseURLString: String {
-        didSet {
-            guard oldValue != baseURLString else { return }
-            UserDefaults.standard.set(baseURLString, forKey: Key.baseURL)
-            onChange?()
-        }
+    /// 数据来源列表,至少保留一个(删空时回退默认)。
+    private(set) var dataSources: [DataSource]
+
+    /// 当前展示的数据来源。
+    private(set) var selectedSourceID: UUID
+
+    var selectedSource: DataSource {
+        dataSources.first { $0.id == selectedSourceID } ?? dataSources[0]
     }
 
     /// 菜单栏显示的指标组合(顺序固定:图标、请求数、Token、命中率、速度)。
@@ -61,12 +72,31 @@ final class AppSettings {
 
     private(set) var launchAtLoginError: String?
 
-    /// 设置变更回调(当前只有服务地址需要触发重连)。
+    /// 设置变更回调(数据来源变化需触发 HubStore 重连)。
     var onChange: (() -> Void)?
 
     init() {
         let d = UserDefaults.standard
-        baseURLString = d.string(forKey: Key.baseURL) ?? "http://127.0.0.1:9192"
+
+        // 迁移旧版单地址 → 来源列表
+        var sources: [DataSource]
+        if let raw = d.string(forKey: Key.sources),
+           let data = raw.data(using: .utf8),
+           let list = try? JSONDecoder().decode([DataSource].self, from: data), !list.isEmpty {
+            sources = list
+        } else {
+            let legacy = d.string(forKey: Key.legacyBaseURL) ?? "http://127.0.0.1:9192"
+            sources = [DataSource(name: "默认", urlString: legacy)]
+        }
+        dataSources = sources
+
+        if let raw = d.string(forKey: Key.selectedSourceID),
+           let id = UUID(uuidString: raw),
+           sources.contains(where: { $0.id == id }) {
+            selectedSourceID = id
+        } else {
+            selectedSourceID = sources[0].id
+        }
 
         // 迁移旧版单选模式 → 组合;无旧值时默认 数量 + 实时速度
         if let legacy = d.string(forKey: Key.legacyMode) {
@@ -81,6 +111,64 @@ final class AppSettings {
         launchAtLogin = d.bool(forKey: Key.launchAtLogin) && SMAppService.mainApp.status == .enabled
     }
 
+    // MARK: - 数据来源操作
+
+    /// 切换当前来源(面板快速切换与设置页共用)。
+    func selectSource(_ id: UUID) {
+        guard dataSources.contains(where: { $0.id == id }), selectedSourceID != id else { return }
+        selectedSourceID = id
+        persistSources()
+        onChange?()
+    }
+
+    func addSource() {
+        dataSources.append(DataSource(name: "来源 \(dataSources.count + 1)", urlString: ""))
+        persistSources()
+        onChange?()
+    }
+
+    /// 新增一个已填好信息的来源(设置页"添加"表单或导入场景)。
+    func addSource(name: String, urlString: String) {
+        dataSources.append(DataSource(name: name, urlString: urlString))
+        persistSources()
+        onChange?()
+    }
+
+    func removeSource(_ id: UUID) {
+        guard let idx = dataSources.firstIndex(where: { $0.id == id }) else { return }
+        dataSources.remove(at: idx)
+        if dataSources.isEmpty {
+            dataSources = [DataSource(name: "默认", urlString: HubURL.fallback.absoluteString)]
+        }
+        if selectedSourceID == id {
+            selectedSourceID = dataSources[max(0, idx - 1)].id
+        }
+        persistSources()
+        onChange?()
+    }
+
+    /// 编辑来源的名称与地址;地址变化由 HubStore 防抖后重连。
+    func updateSource(_ id: UUID, name: String, urlString: String) {
+        guard let idx = dataSources.firstIndex(where: { $0.id == id }) else { return }
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedURL = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard dataSources[idx].name != trimmedName || dataSources[idx].urlString != trimmedURL else { return }
+        dataSources[idx].name = trimmedName.isEmpty ? "未命名" : trimmedName
+        dataSources[idx].urlString = trimmedURL
+        persistSources()
+        onChange?()
+    }
+
+    private func persistSources() {
+        if let data = try? JSONEncoder().encode(dataSources) {
+            UserDefaults.standard.set(String(data: data, encoding: .utf8), forKey: Key.sources)
+        }
+        UserDefaults.standard.set(selectedSourceID.uuidString, forKey: Key.selectedSourceID)
+        UserDefaults.standard.removeObject(forKey: Key.legacyBaseURL)
+    }
+
+    var httpBaseURL: URL { HubURL.httpBase(selectedSource.urlString) }
+
     private static func legacyMapping(_ mode: String) -> Set<MenuBarMetric> {
         switch mode {
         case "tokensToday": [.tokens]
@@ -91,7 +179,7 @@ final class AppSettings {
         }
     }
 
-    var httpBaseURL: URL { HubURL.httpBase(baseURLString) }
+    var httpBaseURLLegacy: URL { HubURL.httpBase(selectedSource.urlString) }
 
     private func applyLaunchAtLogin() {
         let service = SMAppService.mainApp
