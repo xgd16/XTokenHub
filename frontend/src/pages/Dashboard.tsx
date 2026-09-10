@@ -1055,7 +1055,7 @@ export default function Dashboard() {
           <Card
             className="panel"
             style={{ height: '100%' }}
-            styles={{ body: { padding: '14px 16px 12px' }, header: { borderBottom: '1px solid var(--border-faint)' } }}
+            styles={{ body: { padding: '14px 16px 12px', display: 'flex', flexDirection: 'column' }, header: { borderBottom: '1px solid var(--border-faint)' } }}
             title={<span style={panelHeaderStyle}>Token 活动</span>}
             extra={
               <Segmented
@@ -1071,7 +1071,7 @@ export default function Dashboard() {
             }
           >
             <TokenHeatmap data={heat} mode={heatMode} />
-            <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 4, marginTop: 8, fontSize: 11, color: 'var(--text-faint)' }}>
+            <div style={{ display: 'flex', flexShrink: 0, justifyContent: 'flex-end', alignItems: 'center', gap: 4, marginTop: 8, fontSize: 11, color: 'var(--text-faint)' }}>
               <span>少</span>
               {[0, 1, 2, 3, 4].map((lv) => (
                 <span
