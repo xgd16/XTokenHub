@@ -31,6 +31,12 @@ type LogSink interface {
 	Create(ctx context.Context, log *model.RequestLog) error
 }
 
+// PricingSource 计价数据源（由 service.CostService 实现；nil = 不计价）。
+type PricingSource interface {
+	// Cost 按给定上游口径计算单次请求费用（USD），未定价模型返回 0。
+	Cost(l *model.RequestLog, style model.UsageStyle) float64
+}
+
 // Request 一次网关请求的上下文。
 type Request struct {
 	Protocol     model.Protocol         // 入站协议
@@ -54,7 +60,8 @@ type Executor struct {
 	client       *provider.UpstreamClient
 	maxRespBytes int64 // 非流式响应读取上限
 	throughput   *Throughput
-	reqSeq       atomic.Int64 // 进程内请求序号（进行中/完成事件配对）
+	pricing      PricingSource // 计价数据源（nil = 不计价）
+	reqSeq       atomic.Int64  // 进程内请求序号（进行中/完成事件配对）
 }
 
 // NewExecutor 构造执行器。
@@ -73,6 +80,9 @@ func (e *Executor) SetThroughput(t *Throughput) { e.throughput = t }
 
 // SetCustomModels 注入自定义模型组数据源（nil 表示不启用分组路由）。
 func (e *Executor) SetCustomModels(src CustomModelSource) { e.customs = src }
+
+// SetPricing 注入计价数据源（nil 表示不计算费用）。
+func (e *Executor) SetPricing(src PricingSource) { e.pricing = src }
 
 // AvailableModels 聚合全部启用渠道显式配置的模型与启用的自定义模型 ID（去重、字典序排序），
 // 供 GET /v1/models 对外暴露能力清单。渠道 models 为空的视为「支持全部」，无法枚举，不产生条目。
@@ -318,6 +328,8 @@ func (e *Executor) handleNonStream(ctx context.Context, w http.ResponseWriter, r
 
 	// usage 统计
 	log.DurationMS = time.Since(start).Milliseconds()
+	// 计价口径只有这里还知道（上游协议），事后用 SQL 反推不出来
+	log.UsageStyle = model.UsageStyleOf(up)
 	usage, ok := provider.ParseUsage(up, upstreamBody)
 	if ok {
 		log.PromptTokens = usage.PromptTokens
@@ -506,6 +518,7 @@ func (e *Executor) handleStream(ctx context.Context, w http.ResponseWriter, req 
 	splitter.Flush()
 
 	// 收尾：转换模式补齐客户端协议结束事件
+	log.UsageStyle = model.UsageStyleOf(up)
 	var usage provider.Usage
 	var usageOK bool
 	if converter != nil {
@@ -606,6 +619,11 @@ func (e *Executor) finish(ctx context.Context, log *model.RequestLog) {
 	}
 	if log.PromptTokens > 0 {
 		log.CacheHitRate = float64(log.CachedTokens) / float64(log.PromptTokens)
+	}
+	// UsageStyle 非空表示已解析到 usage：此时按该口径与模型价格计费。
+	// 未定价模型返回 0，不影响落库。
+	if e.pricing != nil && log.UsageStyle != "" {
+		log.CostUSD = e.pricing.Cost(log, log.UsageStyle)
 	}
 	if err := e.logs.Create(context.WithoutCancel(ctx), log); err != nil {
 		logger.L("gateway").Error("save request log", logger.Err(err))

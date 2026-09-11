@@ -118,6 +118,7 @@ func (r *logRepo) Summary(ctx context.Context, since time.Time) (*Summary, error
 		Cached  int64
 		AvgMS   float64
 		Native  int64
+		Cost    float64
 	}{}
 	err := r.statWindow(ctx, since).Select(
 		"COUNT(*) AS total, " +
@@ -126,6 +127,7 @@ func (r *logRepo) Summary(ctx context.Context, since time.Time) (*Summary, error
 			"COALESCE(SUM(CASE WHEN error = '' THEN completion_tokens ELSE 0 END),0) AS compl, " +
 			"COALESCE(SUM(CASE WHEN error = '' THEN cached_tokens ELSE 0 END),0) AS cached, " +
 			"COALESCE(AVG(CASE WHEN error = '' THEN duration_ms END),0) AS avg_ms, " +
+			"COALESCE(SUM(cost_usd),0) AS cost, " +
 			"SUM(CASE WHEN forward_mode = 'native_passthrough' THEN 1 ELSE 0 END) AS native",
 	).Scan(&row).Error
 	if err != nil {
@@ -138,6 +140,7 @@ func (r *logRepo) Summary(ctx context.Context, since time.Time) (*Summary, error
 	s.CompletionTok = row.Compl
 	s.TotalTokens = row.Prompt + row.Compl
 	s.CachedTokens = row.Cached
+	s.CostUSD = row.Cost
 	if row.Prompt > 0 {
 		s.CacheHitRate = float64(row.Cached) / float64(row.Prompt)
 	}
@@ -158,6 +161,7 @@ func (r *logRepo) TrendByBucket(ctx context.Context, since time.Time, bucketSec 
 	expr := fmt.Sprintf(
 		"CAST(strftime('%%s', created_at) AS INTEGER)/%d*%d AS ts, COUNT(*) AS requests, "+
 			"COALESCE(SUM(prompt_tokens + completion_tokens),0) AS total_tokens, "+
+			"COALESCE(SUM(cost_usd),0) AS cost_usd, "+
 			"SUM(CASE WHEN error <> '' THEN 1 ELSE 0 END) AS error_requests",
 		bucketSec, bucketSec)
 	err := r.statWindow(ctx, since).Select(expr).Group("ts").Order("ts ASC").Scan(&points).Error
@@ -172,6 +176,7 @@ func (r *logRepo) TrendByDay(ctx context.Context, since time.Time) ([]TrendPoint
 	err := r.statWindow(ctx, since).Select(
 		"DATE(created_at, 'localtime') AS date, COUNT(*) AS requests, " +
 			"COALESCE(SUM(prompt_tokens + completion_tokens),0) AS total_tokens, " +
+			"COALESCE(SUM(cost_usd),0) AS cost_usd, " +
 			"SUM(CASE WHEN error <> '' THEN 1 ELSE 0 END) AS error_requests",
 	).Group("DATE(created_at, 'localtime')").Order("date ASC").Scan(&points).Error
 	if points == nil {
@@ -186,6 +191,7 @@ func groupScan(rows []struct {
 	TotalTokens int64
 	CachedToken int64
 	AvgMS       float64
+	Cost        float64
 }) []GroupStat {
 	out := make([]GroupStat, 0, len(rows))
 	for _, r := range rows {
@@ -195,6 +201,7 @@ func groupScan(rows []struct {
 			TotalTokens: r.TotalTokens,
 			CachedToken: r.CachedToken,
 			AvgMS:       r.AvgMS,
+			CostUSD:     r.Cost,
 		}
 		if gs.TotalTokens > 0 {
 			gs.CacheRate = float64(r.CachedToken) / float64(r.TotalTokens)
@@ -211,11 +218,13 @@ func (r *logRepo) GroupByModel(ctx context.Context, since time.Time) ([]GroupSta
 		TotalTokens int64
 		CachedToken int64
 		AvgMS       float64
+		Cost        float64
 	}
 	err := r.statWindow(ctx, since).Select(
 		"model AS name, COUNT(*) AS requests, " +
 			"COALESCE(SUM(prompt_tokens + completion_tokens),0) AS total_tokens, " +
 			"COALESCE(SUM(cached_tokens),0) AS cached_token, " +
+			"COALESCE(SUM(cost_usd),0) AS cost, " +
 			"COALESCE(AVG(duration_ms),0) AS avg_ms",
 	).Group("model").Order("requests DESC").Scan(&rows).Error
 	if err != nil {
@@ -286,11 +295,13 @@ func (r *logRepo) GroupByChannel(ctx context.Context, since time.Time) ([]GroupS
 		TotalTokens int64
 		CachedToken int64
 		AvgMS       float64
+		Cost        float64
 	}
 	err := r.statWindow(ctx, since).Select(
 		"COALESCE(channel_name,'unknown') AS name, COUNT(*) AS requests, " +
 			"COALESCE(SUM(prompt_tokens + completion_tokens),0) AS total_tokens, " +
 			"COALESCE(SUM(cached_tokens),0) AS cached_token, " +
+			"COALESCE(SUM(cost_usd),0) AS cost, " +
 			"COALESCE(AVG(duration_ms),0) AS avg_ms",
 	).Group("channel_name").Order("requests DESC").Scan(&rows).Error
 	if err != nil {
@@ -306,17 +317,98 @@ func (r *logRepo) GroupByKey(ctx context.Context, since time.Time) ([]GroupStat,
 		TotalTokens int64
 		CachedToken int64
 		AvgMS       float64
+		Cost        float64
 	}
 	err := r.statWindow(ctx, since).Select(
 		"CASE WHEN key_name = '' THEN '(匿名)' ELSE key_name END AS name, COUNT(*) AS requests, " +
 			"COALESCE(SUM(prompt_tokens + completion_tokens),0) AS total_tokens, " +
 			"COALESCE(SUM(cached_tokens),0) AS cached_token, " +
+			"COALESCE(SUM(cost_usd),0) AS cost, " +
 			"COALESCE(AVG(duration_ms),0) AS avg_ms",
 	).Group("key_id, key_name").Order("requests DESC").Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
 	return groupScan(rows), nil
+}
+
+// CostSince 时间窗 [since, until) 内的费用合计与计入请求数（until 为零值表示到当前）。
+func (r *logRepo) CostSince(ctx context.Context, since, until time.Time) (float64, int64, error) {
+	var row struct {
+		Cost     float64
+		Requests int64
+	}
+	q := r.db.WithContext(ctx).Model(&model.RequestLog{}).Where("created_at >= ?", since)
+	if !until.IsZero() {
+		q = q.Where("created_at < ?", until)
+	}
+	if err := q.Select("COALESCE(SUM(cost_usd),0) AS cost, COUNT(*) AS requests").Scan(&row).Error; err != nil {
+		return 0, 0, err
+	}
+	return row.Cost, row.Requests, nil
+}
+
+// CostByDay 按日聚合费用与请求数（本地时区日期键）。
+func (r *logRepo) CostByDay(ctx context.Context, since time.Time) ([]DayCost, error) {
+	var rows []DayCost
+	err := r.statWindow(ctx, since).Select(
+		"DATE(created_at, 'localtime') AS date, COUNT(*) AS requests, " +
+			"COALESCE(SUM(cost_usd),0) AS cost_usd",
+	).Group("DATE(created_at, 'localtime')").Order("date ASC").Scan(&rows).Error
+	if rows == nil {
+		rows = []DayCost{}
+	}
+	return rows, err
+}
+
+// ModelsWithUsage 时间窗内有用量的模型及其用量，按总 token 倒序，最多 limit 条。
+// 不在此处判定「未定价」：别名匹配规则在 provider 层，SQL 只能精确同名匹配会漏判。
+func (r *logRepo) ModelsWithUsage(ctx context.Context, since time.Time, limit int) ([]ModelUsage, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 200
+	}
+	var rows []ModelUsage
+	err := r.statWindow(ctx, since).Select(
+		"model AS model, COUNT(*) AS requests, " +
+			"COALESCE(SUM(prompt_tokens + completion_tokens),0) AS total_tokens",
+	).Group("model").Order("total_tokens DESC").Limit(limit).Scan(&rows).Error
+	if rows == nil {
+		rows = []ModelUsage{}
+	}
+	return rows, err
+}
+
+// RecomputeBatch 按游标取一批待重算费用的日志（id 升序）。
+func (r *logRepo) RecomputeBatch(ctx context.Context, from, to time.Time, afterID int64, limit int, onlyMissing bool) ([]model.RequestLog, error) {
+	if limit <= 0 || limit > 2000 {
+		limit = 500
+	}
+	q := r.db.WithContext(ctx).Model(&model.RequestLog{}).
+		Where("created_at >= ?", from).
+		Where("id > ?", afterID).
+		Order("id ASC").Limit(limit)
+	if !to.IsZero() {
+		q = q.Where("created_at < ?", to)
+	}
+	if onlyMissing {
+		// cost_usd 可能为 NULL：旧库升级时 AutoMigrate 只加列、不回填，历史行是 NULL，
+		// 而 SQL 里 NULL <= 0 求值为 NULL（非 TRUE），只写 <= 0 会漏掉全部历史行。
+		q = q.Where("cost_usd IS NULL OR cost_usd <= 0")
+	}
+	var rows []model.RequestLog
+	err := q.Find(&rows).Error
+	return rows, err
+}
+
+// UpdateCost 回写单条日志的费用、计价口径与计价时段（只更新三列，避免覆盖并发写入的其他字段）。
+func (r *logRepo) UpdateCost(ctx context.Context, id int64, costUSD float64, style model.UsageStyle, period model.PricePeriod) error {
+	return r.db.WithContext(ctx).Model(&model.RequestLog{}).
+		Where("id = ?", id).
+		Updates(map[string]any{
+			"cost_usd":     costUSD,
+			"usage_style":  style,
+			"price_period": period,
+		}).Error
 }
 
 // DailyUsage 按日聚合请求数 / token / 成功请求最大耗时。

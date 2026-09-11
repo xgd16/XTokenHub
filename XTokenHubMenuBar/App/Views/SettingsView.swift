@@ -61,7 +61,7 @@ struct SettingsView: View {
             } header: {
                 Text("菜单栏显示")
             } footer: {
-                Text("自由勾选要显示的指标,按 勾选顺序固定为:图标 · 请求数 · Token · 命中率 · 速度;全部取消时仅显示图标。")
+                Text("自由勾选要显示的指标,顺序固定为:图标 · 请求数 · Token · 命中率 · 花费 · 速度;全部取消时仅显示图标。")
             }
 
             Section("通用") {
@@ -72,7 +72,7 @@ struct SettingsView: View {
                         .foregroundStyle(.red)
                 }
                 LabeledContent("版本") {
-                    Text("1.1.0")
+                    Text("1.2.0")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -142,7 +142,8 @@ private struct SourceRow: View {
                 .buttonStyle(.plain)
                 .help(isSelected ? "当前数据来源" : "切换到此来源")
 
-                TextField("名称", text: $name)
+                TextField("", text: $name, prompt: Text("名称"))
+                    .labelsHidden()
                     .focused($focused, equals: .name)
                     .onSubmit(commit)
 
@@ -158,7 +159,8 @@ private struct SourceRow: View {
                     .help("删除此来源")
                 }
             }
-            TextField("http://127.0.0.1:9192", text: $urlString)
+            TextField("", text: $urlString, prompt: Text("http://127.0.0.1:9192"))
+                .labelsHidden()
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .textFieldStyle(.plain)

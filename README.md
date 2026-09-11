@@ -36,6 +36,7 @@ Bring together upstream LLM provider APIs as channels, expose standardized proto
 - **🗂 Model grouping** — Each channel carries its own model list (one-click pull from upstream), and multiple upstreams are aggregated into a single `/v1/models` view. Route by priority / weighted random with automatic failover across channels serving the same model;
 - **📊 Instant usage insight** — The dashboard shows request count, token usage, cache hit rate, and average latency in real time, aggregated by model / channel / caller key, with a GitHub-style token activity heatmap and daily trend charts, all pushed live over WebSocket;
 - **🔄 Protocol conversion** — Exposes OpenAI (`/v1/chat/completions`, `/v1/responses`) and Anthropic (`/v1/messages`) endpoints simultaneously; when inbound and upstream protocols differ, requests are converted automatically. When they match, traffic is passed through natively with zero conversion, preserving tool calls, multimodal payloads, and other full capabilities;
+- **💰 Cost tracking & spend forecast** — Every request is priced instantly using the upstream's own usage convention (OpenAI and Anthropic bill cache differently), and the dashboard shows today's / this month's spend plus a **projected month-end figure**. The price table syncs from LiteLLM's public data in one click (~2,900 models) and accepts manual overrides, with optional USD/CNY display;
 - **🧾 Gateway keys & per-caller stats** — Issue `sk-xt-*` gateway keys to different clients and aggregate request count and tokens per key, so you always know who consumes the most;
 - **📦 Single-binary self-hosting** — The frontend is embedded via go:embed; `make build` produces one static binary (zero CGO). Copy it to any Linux/macOS machine and run.
 
@@ -100,6 +101,51 @@ Protocol conversion matrix (fallback path; v1 focuses on text chat + common samp
 - **Chart interactions**: hovering the trend chart shows crosshairs and per-model breakdowns for the day; hovering the donut boldens the sector, switches the center to its share, and highlights the legend; hovering the heatmap shows that day's tokens;
 - Real-time request stream: rows are merged into sessions by caller (`X-Session-Id` inbound header, stored as `session_id`), summarizing request count / tokens / cache hit / latency; click a row's arrow to expand request-level details. Callers without a session header stay on a single row; each row has a "view headers" action showing the full inbound request headers (`request_headers`).
 
+## Cost Tracking & Spend Forecast
+
+- **Per-request cost**: every request is priced the moment the upstream response arrives and stored with the log row (`cost_usd`), visible in both the request log and the dashboard. Historical rows are never rewritten when prices change; use "recompute historical cost" in Settings when you want them recalculated.
+- **Spend cards**: the dashboard shows today's spend, this month's spend, and this month's projected spend; the model and caller leaderboards carry cost too.
+- **End-of-period forecast**: with ≥ 3 complete days of history, the remaining period is projected at the trailing 7-day daily average; otherwise it falls back to linear extrapolation from this period's burn rate. When the period just started (under 10 minutes) or nothing has been spent yet, no forecast is shown and the reason is stated instead of guessing from a tiny sample. Setting a monthly budget additionally yields a projected date of hitting it.
+- **Price table**: search, add, edit and delete per-model rates in Settings, or sync the LiteLLM public price table in one click (~2,900 models, USD per token, including cache read/write and long-context tiers). Rows you edit are marked "manual" and survive later syncs.
+- **Unpriced warning**: models with usage but no price are listed separately (their cost counts as 0); add a rate and hit "recompute historical cost" to backfill.
+- **Multi-currency**: each price row is denominated in either CNY or USD. CNY rows are converted to USD at your configured rate before being recorded, so `cost_usd` stays a single USD figure; the display currency can be switched to CNY.
+- **Off-peak (time-of-day) rates**: a price row can declare its peak window, and requests outside it are billed at the row's off-peak rates — so the "half price during off-peak hours" pricing common among Chinese model providers (e.g. DeepSeek) is recorded faithfully.
+
+### Pricing semantics
+
+Input tokens are split according to the upstream protocol's convention. The two conventions **must not be mixed**, or requests will be double- or under-billed:
+
+- **OpenAI-style** (`chat_completions` / `responses`): `prompt_tokens` already includes cache hits, so uncached input = `prompt − cached`, and cache writes are not billed separately.
+- **Anthropic-style** (`messages`): `input_tokens` excludes cache reads and writes, so cache reads and cache writes are billed on their own.
+
+This is why cost is computed and persisted **at gateway write time**: the stored row only carries the inbound protocol, so after a protocol conversion (e.g. a chat inbound request served by a messages upstream) the upstream convention can no longer be recovered. Two columns record what was used: `usage_style` (the convention) and `price_period` (`peak` / `off_peak`), both for auditing and recompute.
+
+Rates: public tables quote per million tokens while the database stores per single token; the Settings form takes per-million values. A Chinese provider's "cache hit" price is this project's **cache read** rate (e.g. DeepSeek: ¥0.04/M peak, ¥0.02/M off-peak). **Leaving cache read at 0 falls back to the input rate** (matching the public table's own behaviour), which markedly **overestimates** cost when the cache hit rate is high — cached tokens get billed at the much pricier input rate. The Settings editor warns about this explicitly.
+
+### Currency and off-peak rates
+
+Every price row carries a currency: `USD` (always the case for synced rows) or `CNY`. A CNY row is converted to USD using the USD→CNY rate under "Billing & display" before being folded into `cost_usd`, so all aggregation, forecasting and leaderboards remain single-currency USD. **When no rate is configured (0), CNY rows cost 0** (treated as unpriced, rather than producing a number in the wrong unit); Settings warns about this, and "recompute historical cost" backfills once a rate is set.
+
+Off-peak pricing is expressed as the row's **peak window** (everything else is off-peak) and is configured per model:
+
+```
+<weekdays>;<span>[,<span>...]
+```
+
+- Weekdays: `1`=Monday … `7`=Sunday, supporting ranges and lists — `1-5`, `1,3,5`, `6-7`.
+- Spans: `HH:MM-HH:MM`, comma-separated; the end must be later than the start and **must not wrap past midnight** (off-peak is expressed by listing the peak windows, so wrapping is never needed).
+- Evaluation is always in **Beijing time (UTC+8)**, independent of the server timezone.
+
+DeepSeek's published rule (weekdays 09:00–12:00 and 14:00–18:00 are peak) is:
+
+```
+1-5;09:00-12:00,14:00-18:00
+```
+
+Settings' price editor has an "apply DeepSeek template" button for this. Leaving an off-peak rate at 0 falls back to the peak rate (the period is still recorded).
+
+Known limitations: long-context pricing supports **a single tier** (once a threshold is set, a prompt above it reprices the whole request at the above-threshold rates; multi-tier upstream pricing is approximated by its first tier), and off-peak rates apply only to the four base rates, not to the above-threshold tier; the public price table has USD fixed prices only and **no time-of-day data**, so off-peak and CNY pricing can only come from manually configured rows; requests whose token counts were locally estimated because the upstream reported no usage carry an estimated cost too; models absent from the price table cost 0.
+
 ## API
 
 Admin endpoints (`/api/v1`, no login auth yet):
@@ -131,6 +177,19 @@ GET    /api/v1/stats/by-channel?hours=24
 GET    /api/v1/stats/by-key?hours=24  Aggregate by caller key (requests/tokens/cache hit rate)
 GET    /api/v1/stats/lifetime         Lifetime totals (total tokens/peak day/longest single duration/consecutive days)
 GET    /api/v1/stats/trend-by-model?days=7 Day × model token usage (multi-model trend lines)
+GET    /api/v1/stats/cost/forecast?period=today|month Spend forecast (spent / projected /
+                                      basis / confidence; adds projected_exceeded_date
+                                      when a monthly budget is configured)
+GET    /api/v1/stats/cost/unpriced?hours=720 Models with usage but no price entry
+POST   /api/v1/stats/cost/recompute   Recompute historical cost {from?,to?,only_missing?}
+GET    /api/v1/settings/prices        Price table (paginated, q fuzzy search, used_only filter;
+                                      returns sync status / unpriced models / billing settings)
+POST   /api/v1/settings/prices        Add a manual price (rates are USD per single token)
+POST   /api/v1/settings/prices/sync   Sync the public price table now (manual rows are kept)
+PUT    /api/v1/settings/prices/:id    Edit a price (marks the row manual so sync stops overwriting it)
+DELETE /api/v1/settings/prices/:id
+GET    /api/v1/settings/billing       Billing display settings (currency / rate / monthly budget)
+PUT    /api/v1/settings/billing
 GET    /healthz
 ```
 
@@ -192,6 +251,56 @@ Config precedence: `XT_HUB_*` env vars > `configs/config.yaml` > built-in defaul
 
 SQLite data lands in `data/xtokenhub.db` (WAL mode, single writer connection).
 
+### Deploying to a Linux device (systemd, start on boot)
+
+`deploy/` ships a systemd unit, an environment-file example, and an installer for running the service as a boot-enabled daemon instead of `nohup`. The artifact is a fully static single binary with no runtime dependencies.
+
+```bash
+# One shot: cross-compile linux/arm64 + upload + install unit + enable at boot
+make deploy-pmos XT_HOST=root@192.168.1.110
+
+# Password-auth devices (sshpass), and write the outbound proxy along the way
+make deploy-pmos XT_HOST=root@192.168.1.110 XT_SSHPASS=xxx XT_PROXY=http://127.0.0.1:7890
+```
+
+Manual install works too (the script is idempotent — re-running it is an upgrade):
+
+```bash
+make dist-pmos                     # -> dist/xtokenhub-pmos-aarch64.tar.gz
+scp dist/xtokenhub-pmos-aarch64.tar.gz deploy/{xtokenhub.service,xtokenhub.env.example,install.sh} <device>:/tmp/
+# On the device:
+mkdir -p /tmp/d && tar xzf /tmp/xtokenhub-pmos-aarch64.tar.gz -C /tmp/d
+XT_ROOT=/path/to/XTokenHub XT_BIN=/usr/local/bin/xtokenhub XT_PROXY=http://127.0.0.1:7890 \
+  sh /tmp/install.sh /tmp/d/xtokenhub-pmos-aarch64
+```
+
+The installer stops the old `nohup` process to free the port (matching only processes whose exe points at `xtokenhub`), atomically replaces the binary, then installs and enables the unit. If a local `mihomo` service exists, it adds a startup ordering dependency on it.
+
+Highlights of `deploy/xtokenhub.service`:
+
+| Setting | Why |
+|---|---|
+| `WorkingDirectory` | Points at the deploy root; `configs/config.yaml` and `database.path` are relative paths, so this must be correct |
+| `EnvironmentFile=-/etc/default/xtokenhub` | Injects the outbound proxy and `XT_HUB_*` overrides; the `-` prefix means a missing file is not an error |
+| `Restart=on-failure` | Auto-restarts on abnormal exit (`systemctl stop` counts as a clean exit and does not) |
+| `StandardOutput=journal` | Logs go to journald instead of an ever-growing `nohup.out` |
+| `ProtectSystem=strict` + `ReadWritePaths=.../data` | Read-only filesystem except `data/`; the program only writes SQLite |
+
+Price-table sync runs once on first start (when the table is empty). If the device cannot reach GitHub directly and needs a proxy, check reachability first (a failed sync does not block startup, but costs stay at 0):
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
+```
+
+Common operations:
+
+```bash
+systemctl status xtokenhub            # status
+journalctl -u xtokenhub -f            # live logs (replaces tail -f nohup.out)
+systemctl restart xtokenhub           # restart
+systemctl is-enabled xtokenhub        # start on boot?
+```
+
 ### Log retention cleanup
 
 `request_logs` is the only table that grows forever (one row per request). The service cleans up every 24 hours by default, deleting logs older than `max_days` (default 90). You can also click "Clean expired logs" on the "Request Logs" page, or trigger manually via `POST /api/v1/logs/cleanup` (returns "cleanup in progress" if one is already running).
@@ -206,7 +315,22 @@ SQLite data lands in `data/xtokenhub.db` (WAL mode, single writer connection).
 
 Env override example: `XT_HUB_RETENTION__MAX_DAYS=30`.
 
-Note: the SQLite file doesn't shrink automatically after cleanup (deletion only frees pages); enable `vacuum` or run `VACUUM` manually. Lifetime dashboard stats are bounded by the retention period; the heatmap/daily trends show history within their display ranges.
+Note: the SQLite file doesn't shrink automatically after cleanup (deletion only frees pages); enable `vacuum` or run `VACUUM` manually. Lifetime dashboard stats are bounded by the retention period; the heatmap/daily trends show history within their display ranges. Cost recompute is bounded the same way (90 days by default).
+
+### Cost-related configuration
+
+| Key | Default | Description |
+|---|---|---|
+| `pricing.enabled` | `true` | Enable cost tracking and forecasting; when off, no price table is fetched and cost stays 0 |
+| `pricing.auto_sync` | `true` | Sync the public price table on a timer |
+| `pricing.sync_interval_hours` | `24` | Sync interval in hours (>=1) |
+| `pricing.source_url` | empty | Price table URL; empty uses the built-in LiteLLM public table |
+| `pricing.timeout_seconds` | `20` | Price table fetch timeout in seconds (>=1) |
+| `billing.display_currency` | `USD` | Default display currency, `USD` / `CNY` (seeded on first init only; Settings wins afterwards) |
+| `billing.usd_cny_rate` | `0` | USD→CNY rate, maintained by hand (required to display CNY, and to convert CNY-priced model rows) |
+| `billing.monthly_budget_usd` | `0` | Monthly budget; `0` = none. Only drives the forecast overrun hint, never blocks requests |
+
+The price table is synced once on first start (when empty). A failed sync is only logged and startup continues with cost at 0; hit "sync now" in Settings to retry.
 
 ## macOS Menu Bar Companion (XTokenHubMenuBar)
 
@@ -243,7 +367,8 @@ cd frontend && pnpm test:run   # Vitest (WS reconnect/backoff, formatting, data 
 - Balance queries currently support DeepSeek only (official API); Zhipu Coding plan usage is an undocumented API (returns window percentage), Xiaomi MiMo balance requires web-cookie auth that expires in about a day, and OpenCode Go/Zen expose no public balance API — none are integrated;
 - Local token estimation is heuristic (CJK ≈ 1.5 chars/token, Latin ≈ 4 chars/token), only as a fallback when upstreams don't report usage;
 - Gateway API keys are supported (auth + per-caller stats, see above); the admin `/api/v1` still has no login auth — for self-hosted intranet use, apply your own network isolation. Keys are stored in plaintext (same as provider keys);
-- Cache hit rate and per-key aggregation are based on RequestLog snapshots; after a key is deleted, its historical usage remains under its name.
+- Cache hit rate and per-key aggregation are based on RequestLog snapshots; after a key is deleted, its historical usage remains under its name;
+- Cost is a **local estimate from published list prices**, based on the gateway's own metering; it may differ from your upstream bill (cache billing conventions, tiered pricing, batch discounts, granted credits, etc.). **When a price row has no cache-hit rate, cached tokens are billed at the input rate, overestimating cost when the cache hit rate is high.** Long-context pricing supports a single tier only; CNY rows depend on a hand-maintained FX rate and cost 0 when none is set; off-peak windows are evaluated in Beijing time and cannot wrap past midnight; requests whose token counts were locally estimated carry an estimated cost too.
 
 ## License
 

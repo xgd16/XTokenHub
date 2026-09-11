@@ -16,6 +16,8 @@ type Config struct {
 	WS        WSConfig        `mapstructure:"ws"`
 	Gateway   GatewayConfig   `mapstructure:"gateway"`
 	Retention RetentionConfig `mapstructure:"retention"`
+	Pricing   PricingConfig   `mapstructure:"pricing"`
+	Billing   BillingConfig   `mapstructure:"billing"`
 }
 
 type ServerConfig struct {
@@ -67,6 +69,30 @@ type RetentionConfig struct {
 	Vacuum bool `mapstructure:"vacuum"`
 }
 
+// PricingConfig 模型价格表配置。
+type PricingConfig struct {
+	// Enabled 是否启用计价（关闭后价格表不出网、费用恒为 0）。
+	Enabled bool `mapstructure:"enabled"`
+	// AutoSync 是否按 SyncIntervalHours 定时同步公开价格表。
+	AutoSync bool `mapstructure:"auto_sync"`
+	// SyncIntervalHours 定时同步周期（小时）。
+	SyncIntervalHours int `mapstructure:"sync_interval_hours"`
+	// SourceURL 价格表地址，留空使用内置的 LiteLLM 公开价格表。
+	SourceURL string `mapstructure:"source_url"`
+	// TimeoutSeconds 价格表拉取超时（秒）。
+	TimeoutSeconds int `mapstructure:"timeout_seconds"`
+}
+
+// BillingConfig 计费展示默认值（仅首次初始化入库，之后以设置页的值为准）。
+type BillingConfig struct {
+	// DisplayCurrency 默认展示币种：USD | CNY。
+	DisplayCurrency string `mapstructure:"display_currency"`
+	// USDRate USD -> CNY 汇率，手工配置。
+	USDRate float64 `mapstructure:"usd_cny_rate"`
+	// MonthlyBudgetUSD 月度预算，0 = 不设（仅用于预测提示，不拦截请求）。
+	MonthlyBudgetUSD float64 `mapstructure:"monthly_budget_usd"`
+}
+
 // Load 读取配置：priority env( XT_HUB_ 前缀 ) > yaml > 内置默认值。
 func Load(path string) (*Config, error) {
 	v := viper.New()
@@ -114,6 +140,14 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("retention.interval_hours", 24)
 	v.SetDefault("retention.batch_size", 1000)
 	v.SetDefault("retention.vacuum", false)
+	v.SetDefault("pricing.enabled", true)
+	v.SetDefault("pricing.auto_sync", true)
+	v.SetDefault("pricing.sync_interval_hours", 24)
+	v.SetDefault("pricing.source_url", "")
+	v.SetDefault("pricing.timeout_seconds", 20)
+	v.SetDefault("billing.display_currency", "USD")
+	v.SetDefault("billing.usd_cny_rate", 0)
+	v.SetDefault("billing.monthly_budget_usd", 0)
 }
 
 func (c *Config) validate() error {
@@ -131,6 +165,25 @@ func (c *Config) validate() error {
 	}
 	if c.Retention.BatchSize < 100 {
 		return fmt.Errorf("retention.batch_size 非法: %d", c.Retention.BatchSize)
+	}
+	if c.Pricing.Enabled {
+		if c.Pricing.SyncIntervalHours < 1 {
+			return fmt.Errorf("pricing.sync_interval_hours 非法: %d", c.Pricing.SyncIntervalHours)
+		}
+		if c.Pricing.TimeoutSeconds < 1 {
+			return fmt.Errorf("pricing.timeout_seconds 非法: %d", c.Pricing.TimeoutSeconds)
+		}
+		switch strings.ToUpper(c.Billing.DisplayCurrency) {
+		case "USD", "CNY", "":
+		default:
+			return fmt.Errorf("billing.display_currency 非法: %s", c.Billing.DisplayCurrency)
+		}
+		if c.Billing.USDRate < 0 {
+			return fmt.Errorf("billing.usd_cny_rate 非法: %v", c.Billing.USDRate)
+		}
+		if c.Billing.MonthlyBudgetUSD < 0 {
+			return fmt.Errorf("billing.monthly_budget_usd 非法: %v", c.Billing.MonthlyBudgetUSD)
+		}
 	}
 	return nil
 }

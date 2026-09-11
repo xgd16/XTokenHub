@@ -54,6 +54,8 @@ func Migrate(db *gorm.DB) error {
 		&model.RequestLog{},
 		&model.CustomModel{},
 		&model.SessionHeaderConfig{},
+		&model.ModelPrice{},
+		&model.BillingSettings{},
 	); err != nil {
 		return fmt.Errorf("AutoMigrate: %w", err)
 	}

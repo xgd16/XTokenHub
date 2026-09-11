@@ -32,6 +32,9 @@ struct MenuBarLabel: View {
         if metrics.contains(.cacheHit) {
             parts.append(cacheHitText)
         }
+        if metrics.contains(.costToday) {
+            parts.append(costTodayText)
+        }
         if metrics.contains(.throughput) {
             parts.append("\(TokenFormatter.compactSpeed(store.tokensPerSec))/s")
         }
@@ -41,6 +44,19 @@ struct MenuBarLabel: View {
     private var cacheHitText: String {
         guard let rate = store.summary?.cacheHitRate else { return "—" }
         return String(format: "%.1f%%", rate * 100)
+    }
+
+    /// 今日花费(尚未加载时显示占位,避免显示成 $0 误导)。
+    private var costTodayText: String {
+        guard let cost = store.costToday else { return "—" }
+        return MoneyFormatter.format(usd: cost.spentUSD, options: moneyOptions)
+    }
+
+    private var moneyOptions: MoneyFormatter.Options {
+        MoneyFormatter.Options(
+            currency: store.billing?.displayCurrency ?? "USD",
+            rate: store.billing?.usdRate ?? 0
+        )
     }
 
     private var symbol: String {

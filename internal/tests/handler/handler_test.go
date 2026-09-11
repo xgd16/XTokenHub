@@ -1,6 +1,7 @@
 package handler_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,12 +12,14 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"xtokenhub/internal/config"
 	"xtokenhub/internal/eventbus"
 	"xtokenhub/internal/gateway"
 	"xtokenhub/internal/handler/admin"
 	gwhandler "xtokenhub/internal/handler/gateway"
+	"xtokenhub/internal/model"
 	"xtokenhub/internal/provider"
 	"xtokenhub/internal/repository"
 	"xtokenhub/internal/router"
@@ -35,6 +38,20 @@ func newTestEnv(t *testing.T) (*gin.Engine, *httptest.Server) {
 // newTestEnvOpts 同 newTestEnv，可控制网关密钥强制开关并返回密钥服务。
 func newTestEnvOpts(t *testing.T, requireKey bool) (*gin.Engine, *httptest.Server, *service.KeyService) {
 	t.Helper()
+	_, engine, srv, keySvc := newTestEnvFull(t, requireKey)
+	return engine, srv, keySvc
+}
+
+// newTestEnvWithDB 同 newTestEnv，并额外返回底层数据库，供需要断言落库结果的用例使用。
+func newTestEnvWithDB(t *testing.T) (*gorm.DB, *gin.Engine, *httptest.Server) {
+	t.Helper()
+	db, engine, srv, _ := newTestEnvFull(t, false)
+	return db, engine, srv
+}
+
+// newTestEnvFull 构建完整路由 + 内存依赖 + 计价服务，返回全部句柄。
+func newTestEnvFull(t *testing.T, requireKey bool) (*gorm.DB, *gin.Engine, *httptest.Server, *service.KeyService) {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	db := testutil.NewMemoryDB(t)
 	bus := eventbus.New()
@@ -50,7 +67,20 @@ func newTestEnvOpts(t *testing.T, requireKey bool) (*gin.Engine, *httptest.Serve
 	keySvc := service.NewKeyService(keyRepo)
 	logSvc := service.NewLogService(logRepo)
 	statsSvc := service.NewStatsService(logRepo)
+	// 计价：价格表存内存库，价格源用桩（不联网）；网关侧同步注入以覆盖写入时计费
+	costSvc := service.NewCostService(
+		repository.NewModelPriceRepository(db),
+		logRepo,
+		repository.NewBillingSettingsRepository(db),
+		testutil.NewStubPricingSource(testPricingEntries()...),
+		service.CostOptions{Enabled: true, InitialBilling: model.BillingSettings{DisplayCurrency: model.CurrencyUSD, USDRate: 7.2}},
+	)
+	// 价格表为空时 EnsureDefaults 会用桩源同步一次，顺带种子化计费设置
+	if err := costSvc.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("初始化计价服务: %v", err)
+	}
 	exec := gateway.NewExecutor(chRepo, logRepo, bus, upstreamTimeout)
+	exec.SetPricing(costSvc)
 	hub := ws.NewHub(30*time.Second, 10*time.Second)
 
 	engine := gin.New()
@@ -66,6 +96,7 @@ func newTestEnvOpts(t *testing.T, requireKey bool) (*gin.Engine, *httptest.Serve
 		Keys:     admin.NewKeyHandler(keySvc),
 		Logs:     admin.NewLogHandler(logSvc),
 		Stats:    admin.NewStatsHandler(statsSvc),
+		Pricing:  admin.NewPricingHandler(costSvc),
 		WS:       admin.NewWSHandler(hub),
 		Gateway:  gwhandler.NewHandler(exec, keySvc, requireKey, 1<<20),
 		WebFS:    memFS,
@@ -76,7 +107,25 @@ func newTestEnvOpts(t *testing.T, requireKey bool) (*gin.Engine, *httptest.Serve
 		hub.Close()
 		srv.Close()
 	})
-	return engine, srv, keySvc
+	return db, engine, srv, keySvc
+}
+
+// testPricingEntries 测试价格表：一个 OpenAI 系模型 + 一个带长上下文分档的 Anthropic 系模型。
+func testPricingEntries() []provider.ModelPriceEntry {
+	return []provider.ModelPriceEntry{
+		{
+			Model: "gpt-4o", Provider: "openai",
+			InputCostPerToken: 0.0000025, OutputCostPerToken: 0.00001,
+			CacheReadCostPerToken: 0.00000125,
+		},
+		{
+			Model: "claude-sonnet-4", Provider: "anthropic",
+			InputCostPerToken: 0.000003, OutputCostPerToken: 0.000015,
+			CacheReadCostPerToken: 0.0000003, CacheWriteCostPerToken: 0.00000375,
+			ThresholdTokens:        200000,
+			InputCostAbovePerToken: 0.000006, OutputCostAbovePerToken: 0.0000225,
+		},
+	}
 }
 
 func doJSON(t *testing.T, srv *httptest.Server, method, path string, body any) (int, map[string]any, []byte) {

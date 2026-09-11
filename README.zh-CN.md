@@ -36,6 +36,7 @@
 - **🗂 模型分组** —— 每条渠道挂载自己的模型清单（支持从上游一键拉取），多个上游聚合为统一的 `/v1/models` 视图；按 priority / weight 加权路由，同模型多渠道自动 failover；
 - **📊 使用量快速了解** —— 仪表盘实时呈现请求数、token 用量、缓存命中率、平均耗时，按模型 / 渠道 / 调用方密钥多维聚合，配 GitHub 风格 Token 活动热力图与每日趋势图，WebSocket 实时推送；
 - **🔄 协议转换** —— 对外同时暴露 OpenAI（`/v1/chat/completions`、`/v1/responses`）与 Anthropic（`/v1/messages`）三端点，入站与上游协议不一致时自动转换；一致则零转换原生透传，保住工具调用、多模态等完整能力；
+- **💰 花费统计与预计** —— 每条请求按上游 usage 口径即时计费（区分 OpenAI / Anthropic 的缓存计费差异），仪表盘展示今日/本月已花费与**本月预计花费**，价格表可从 LiteLLM 公开数据一键同步（约 2900 个模型）并支持手工覆盖，支持 USD/CNY 双币展示；
 - **🧾 网关密钥与按调用方统计** —— 签发 `sk-xt-*` 网关密钥分发给不同客户端，按密钥聚合请求数与 token，谁用得多一目了然；
 - **📦 单二进制自托管** —— 前端经 go:embed 内嵌，`make build` 产出一个静态二进制（零 CGO），拷到任何 Linux/macOS 机器即可跑。
 
@@ -100,6 +101,51 @@ internal/tests/      全部单元测试（按模块镜像组织，外部测试�
 - **图表交互**：趋势图悬浮出十字准线与当日各模型明细，环图悬浮加粗扇区并在中心切换占比、图例同步高亮，热力图悬浮显示当日 token；
 - 实时请求流：按调用方会话（入站 `X-Session-Id` 头，落库为 `session_id`）自动合并为会话行，汇总请求数 / token / 缓存命中 / 耗时等综合值，点击行首箭头展开该会话的请求级明细；未携带会话头的调用方保持单行展示，每行「查看头」可查看该请求的完整入站请求头（`request_headers`）。
 
+## 花费统计与预计
+
+- **请求级费用**：每条请求在网关收到上游响应后即时计价并随日志落库（`cost_usd`），请求日志与仪表盘均可见；历史记录不会因价格调整而改变，需要时可在设置页「重算历史费用」；
+- **花费卡片**：仪表盘展示今日花费、本月累计花费、本月预计花费，模型 TOP 与调用方 TOP 同时附带花费；
+- **期末预测**：有 ≥ 3 个完整日数据时按近 7 日日均速率外推剩余时段，否则按本周期已花速率线性外推；周期刚开始（不足 10 分钟）或尚无花费时不给预测并说明原因，避免用极少样本给出误导性数字；配置月度预算后会额外推算「预计何时触及预算」；
+- **价格表**：设置页可按模型名搜索、手工增删改单价，并可从 LiteLLM 公开价格表一键同步（约 2900 个模型，USD / 单 token，含缓存读写与长上下文分档）；手工配置的行标记为「手工」，后续同步不会覆盖；
+- **未定价提示**：有用量但价格表未覆盖的模型会单独列出（费用按 0 计），补上单价后点「重算历史费用」即可补齐历史花费；
+- **多币种**：价格行可标为人民币（`CNY`）或美元（`USD`），人民币价按设置页汇率折算成美元记账，`cost_usd` 始终是美元单一口径；展示币种可切人民币；
+- **错峰（时段）价**：价格行可配置高峰时段，空闲时段按对应的 off-peak 费率计价；国内模型（如 DeepSeek）常见的「空闲时段半价」因此能如实入账。
+
+### 计价口径
+
+输入侧 token 按上游协议口径拆分，两种口径**不可混用**，否则会重复计费或漏计：
+
+- **OpenAI 系**（`chat_completions` / `responses`）：`prompt_tokens` 已包含缓存命中，未命中部分 = `prompt − cached`，且不单独计缓存写；
+- **Anthropic 系**（`messages`）：`input_tokens` 不含缓存读写，缓存读与实际写入各自单独计费。
+
+因此费用必须在**网关写入时**计算并落库——落库字段只有入站协议，协议转换（如 chat 入站转 messages 上游）后无法再还原上游口径；日志里的 `usage_style` 记录了当时所用的口径，`price_period` 记录了命中的计价时段（`peak` / `off_peak`），均供审计与重算使用。
+
+费率换算：公开价格表以「每百万 token」报价，本地按「单 token」存储，设置页表单同样按百万 token 录入。国内的「缓存命中」价即本项目的**缓存读**价（如 DeepSeek 空闲 0.02、高峰 0.04 元/百万）；**缓存读留空（0）时会回退为输入价**（与公开价格表口径一致），在缓存命中率高的场景会显著**高估**费用（命中 token 会被按贵得多的输入价计费），设置页编辑弹窗对此有明确提示。
+
+### 币种与错峰价
+
+价格表每行带一个币种：`USD`（同步来源恒为此值）或 `CNY`。人民币行按「计费与展示」里的 USD→CNY 汇率折算成美元后计入 `cost_usd`，因此所有聚合、预测与排行榜仍是单一美元口径。**汇率未配置（为 0）时人民币行的费用记为 0**（按未定价处理，不产出量纲错误的数字）；设置页会给出提示，填好汇率后点「重算历史费用」即可补全。
+
+错峰价用**高峰时段**表达（空闲时段即其余时间），按模型配置：
+
+```
+<星期>;<时段>[,<时段>...]
+```
+
+- 星期：`1`=周一 … `7`=周日，支持区间与列表，如 `1-5`、`1,3,5`、`6-7`；
+- 时段：`HH:MM-HH:MM`，多个用逗号分隔；结束须晚于开始，**不支持跨零点**（空闲时段用「列出高峰窗口」表达，无需环绕）；
+- 判定时区固定为**北京时间（UTC+8）**，不随服务器时区变化。
+
+DeepSeek 官方规则（工作日 9:00–12:00、14:00–18:00 为高峰）即：
+
+```
+1-5;09:00-12:00,14:00-18:00
+```
+
+设置页编辑价格时可点「套用 DeepSeek 模板」一键填入。空闲时段的 off-peak 费率留 0 表示回退高峰费率（时段仍会记录）。
+
+已知限制：长上下文只支持**单档**（填写阈值后，prompt 超过阈值时整单改用「超阈值」费率；上游多档阶梯价按第一档近似），且空闲费率只作用于四个基础费率、不参与超阈值分档；公开价格表只有美元价与固定价，**不含时段价**，因此时段价与人民币价只能来自手工配置的行；上游未报告 usage、由本地估算 token 的请求，其费用同样是估算值；价格表未覆盖的模型费用记 0。
+
 ## API
 
 管理端（`/api/v1`，暂未启用登录认证）：
@@ -130,6 +176,19 @@ GET    /api/v1/stats/by-channel?hours=24
 GET    /api/v1/stats/by-key?hours=24  按调用方密钥聚合（请求数/token/缓存命中率）
 GET    /api/v1/stats/lifetime         全历史累计（总 token/峰值日/最长单次耗时/连续使用天数）
 GET    /api/v1/stats/trend-by-model?days=7 按日 × 模型 token 用量（多模型趋势线）
+GET    /api/v1/stats/live-sessions?limit=20 最近活跃会话聚合（含花费口径的 token 汇总）
+GET    /api/v1/stats/cost/forecast?period=today|month 花费预测（已花费/预测值/基准/置信度；
+                                      设了月度预算时附 projected_exceeded_date）
+GET    /api/v1/stats/cost/unpriced?hours=720 有用量但价格表未覆盖的模型
+POST   /api/v1/stats/cost/recompute   重算历史费用 {from?,to?,only_missing?}
+GET    /api/v1/settings/prices        价格表（分页 + q 模糊搜索 + used_only 过滤；
+                                      附同步状态/未定价模型/计费设置）
+POST   /api/v1/settings/prices        新增手工价格（费率单位 USD / 单 token）
+POST   /api/v1/settings/prices/sync   立即从公开价格表同步（手工配置行保留）
+PUT    /api/v1/settings/prices/:id    编辑价格（改后标记为手工配置，同步不再覆盖）
+DELETE /api/v1/settings/prices/:id
+GET    /api/v1/settings/billing       计费展示设置（币种/汇率/月度预算）
+PUT    /api/v1/settings/billing
 GET    /healthz
 ```
 
@@ -191,6 +250,56 @@ make web
 
 SQLite 数据落盘 `data/xtokenhub.db`（WAL 模式、单写连接）。
 
+### 部署到 Linux 设备（systemd 开机自启）
+
+`deploy/` 提供 systemd 单元、环境变量样例与安装脚本，用于把服务托管为开机自启的常驻进程（替代 `nohup`）。产物是全静态单文件，无需运行时依赖。
+
+```bash
+# 一键：交叉编译 linux/arm64 + 上传 + 安装单元 + 设为开机自启
+make deploy-pmos XT_HOST=root@192.168.1.110
+
+# 需要密码认证的设备（sshpass），并顺带写入出网代理
+make deploy-pmos XT_HOST=root@192.168.1.110 XT_SSHPASS=xxx XT_PROXY=http://127.0.0.1:7890
+```
+
+也可手动安装（脚本幂等，重复执行即为升级）：
+
+```bash
+make dist-pmos                     # -> dist/xtokenhub-pmos-aarch64.tar.gz
+scp dist/xtokenhub-pmos-aarch64.tar.gz deploy/{xtokenhub.service,xtokenhub.env.example,install.sh} <设备>:/tmp/
+# 设备上：
+mkdir -p /tmp/d && tar xzf /tmp/xtokenhub-pmos-aarch64.tar.gz -C /tmp/d
+XT_ROOT=/path/to/XTokenHub XT_BIN=/usr/local/bin/xtokenhub XT_PROXY=http://127.0.0.1:7890 \
+  sh /tmp/install.sh /tmp/d/xtokenhub-pmos-aarch64
+```
+
+安装脚本会：停掉旧的 `nohup` 进程以释放端口（只匹配 exe 指向 `xtokenhub` 的进程）→ 原子替换二进制 → 安装单元并 `enable`；检测到本机 `mihomo` 服务时自动添加启动顺序依赖。
+
+`deploy/xtokenhub.service` 的要点：
+
+| 项 | 说明 |
+|---|---|
+| `WorkingDirectory` | 指向部署根目录；`configs/config.yaml` 与 `database.path` 是相对路径，必须设对 |
+| `EnvironmentFile=-/etc/default/xtokenhub` | 注入出网代理与 `XT_HUB_*` 覆盖；`-` 前缀表示文件缺失不报错 |
+| `Restart=on-failure` | 异常退出自动拉起（`systemctl stop` 属正常退出，不重启） |
+| `StandardOutput=journal` | 日志进 journald，替代无限增长的 `nohup.out` |
+| `ProtectSystem=strict` + `ReadWritePaths=.../data` | 除 `data/` 外文件系统只读；程序只写 SQLite，无需其他写权限 |
+
+价格表同步在首次启动（表为空）时执行一次；若设备无法直连 GitHub 而需代理，部署前先测一次可达性（同步失败不阻塞启动，但费用会保持为 0）：
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
+```
+
+常用运维命令：
+
+```bash
+systemctl status xtokenhub            # 状态
+journalctl -u xtokenhub -f            # 实时日志（替代 tail -f nohup.out）
+systemctl restart xtokenhub           # 重启
+systemctl is-enabled xtokenhub        # 是否开机自启
+```
+
 ### 日志保留期清理
 
 `request_logs` 是唯一持续增长的表（每请求一行）。服务默认每 24 小时清理一次，删除超过 `max_days`（默认 90 天）的日志，也可在「请求日志」页右上角点击「清理过期日志」，或通过 `POST /api/v1/logs/cleanup` 手动触发（后台已有清理运行时返回「清理正在进行中」）。
@@ -205,7 +314,22 @@ SQLite 数据落盘 `data/xtokenhub.db`（WAL 模式、单写连接）。
 
 环境变量覆盖示例：`XT_HUB_RETENTION__MAX_DAYS=30`。
 
-注意：清理后 SQLite 文件大小不会自动缩减（删除只释放页），需要开启 `vacuum` 或定时手动 `VACUUM`；仪表盘「全历史累计」等以保留期为界，热力图/按日趋势最长展示区间内的历史。
+注意：清理后 SQLite 文件大小不会自动缩减（删除只释放页），需要开启 `vacuum` 或定时手动 `VACUUM`；仪表盘「全历史累计」等以保留期为界，热力图/按日趋势最长展示区间内的历史。费用重算同样受保留期限制（默认回看 90 天）。
+
+### 计价相关配置
+
+| 配置 | 默认 | 说明 |
+|---|---|---|
+| `pricing.enabled` | `true` | 是否启用花费统计与预测；关闭后价格表不出网、费用恒为 0 |
+| `pricing.auto_sync` | `true` | 是否定时同步公开价格表 |
+| `pricing.sync_interval_hours` | `24` | 同步周期（小时，>=1） |
+| `pricing.source_url` | 空 | 价格表地址；留空使用内置 LiteLLM 公开价格表 |
+| `pricing.timeout_seconds` | `20` | 价格表拉取超时（秒，>=1） |
+| `billing.display_currency` | `USD` | 默认展示币种 `USD` / `CNY`（仅首次初始化入库，之后以设置页为准） |
+| `billing.usd_cny_rate` | `0` | USD→CNY 汇率，手工维护（展示 CNY、以及折算人民币计价的价格行都需要） |
+| `billing.monthly_budget_usd` | `0` | 月度预算，`0` = 不设；仅用于预测的超支提示，不拦截请求 |
+
+价格表在首次启动（表为空）时自动同步一次；同步失败只记日志并继续启动，费用暂按 0 计，可在设置页重新点「立即同步」。
 
 ## macOS 菜单栏伴侣应用（XTokenHubMenuBar）
 
@@ -242,7 +366,8 @@ cd frontend && pnpm test:run   # Vitest（WS 重连/退避、格式化、数据�
 - 余额查询当前仅支持 DeepSeek（官方接口）；智谱 Coding 套餐用量为未文档化接口（返回窗口百分比）、小米 MiMo 余额仅支持网页 Cookie 鉴权且会话约一天失效、OpenCode Go/Zen 无公开余额 API，均未接入；
 - 本地 token 估算为启发式（CJK ≈ 1.5 字/token，拉丁 ≈ 4 字/token），仅作上游未报告 usage 时的兜底；
 - 网关 API Key 已支持（鉴权 + 按调用方统计，见「网关鉴权与按调用方统计」）；管理端 `/api/v1` 仍无登录认证，自托管内网使用场景请自行做好网络隔离；密钥明文存储（与渠道厂家 key 一致）；
-- 统计缓存命中率、按 key 聚合均基于 RequestLog 快照，密钥删除后历史用量仍保留在其名称下。
+- 统计缓存命中率、按 key 聚合均基于 RequestLog 快照，密钥删除后历史用量仍保留在其名称下；
+- 花费为**按公开标价本地估算**，以网关自身的计量为准，与上游账单可能存在差异（缓存计费口径、阶梯价、批量折扣、赠送额度等）；**价格行缺缓存命中价时会按输入价计缓存命中，缓存命中率高的场景会高估费用**；长上下文只支持单档费率；人民币计价行的折算依赖手工维护的汇率，汇率未配置时这类模型费用记 0；错峰价的时段判定固定北京时间且不支持跨零点窗口；上游未报告 usage 而由本地估算 token 的请求，费用同为估算值。
 
 ## License
 

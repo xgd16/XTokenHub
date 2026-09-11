@@ -28,3 +28,18 @@ retention:
   interval_hours: 24     # 清理运行周期(小时)
   batch_size: 1000       # 单批删除行数，分批执行避免长事务
   vacuum: false          # 清理生效后执行 VACUUM 回收磁盘空间（独占锁，建议低峰开启）
+
+pricing:
+  enabled: true                        # 是否启用花费统计与预测（关闭后价格表不出网、费用恒为 0）
+  auto_sync: true                      # 定时同步公开价格表
+  sync_interval_hours: 24              # 同步周期(小时)
+  source_url: ""                       # 价格表地址，留空使用内置 LiteLLM 公开价格表
+  timeout_seconds: 20                  # 价格表拉取超时(秒)
+
+billing:
+  display_currency: USD                # 默认展示币种 USD | CNY（仅首次初始化入库，之后以设置页为准）
+  usd_cny_rate: 0                      # USD -> CNY 汇率，手工配置（展示 CNY、以及折算人民币计价的价格行都需要；为 0 时人民币行费用记 0）
+  monthly_budget_usd: 0                # 月度预算上限，0 = 不设；仅用于预测提示，不拦截请求
+# 说明：每个模型的价格行可单独标币种（USD|CNY）并配置高峰时段（如 1-5;09:00-12:00,14:00-18:00，
+#       北京时间），空闲时段按 off-peak 费率计价。这些只能来自设置页的手工价格行 —— 公开价格表
+#       只有美元固定价，同步不会写入币种/时段信息。

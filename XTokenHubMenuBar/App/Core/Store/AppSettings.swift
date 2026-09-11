@@ -19,6 +19,7 @@ final class AppSettings {
         case requests
         case tokens
         case cacheHit
+        case costToday
         case throughput
 
         var id: String { rawValue }
@@ -29,6 +30,7 @@ final class AppSettings {
             case .requests: "今日请求数"
             case .tokens: "今日 Token"
             case .cacheHit: "缓存命中率"
+            case .costToday: "今日花费"
             case .throughput: "实时速度"
             }
         }
@@ -53,7 +55,7 @@ final class AppSettings {
         dataSources.first { $0.id == selectedSourceID } ?? dataSources[0]
     }
 
-    /// 菜单栏显示的指标组合(顺序固定:图标、请求数、Token、命中率、速度)。
+    /// 菜单栏显示的指标组合(顺序固定:图标、请求数、Token、命中率、花费、速度)。
     var menuBarMetrics: Set<MenuBarMetric> {
         didSet {
             guard oldValue != menuBarMetrics else { return }

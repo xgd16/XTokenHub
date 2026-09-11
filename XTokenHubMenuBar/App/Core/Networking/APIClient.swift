@@ -77,6 +77,38 @@ struct APIClient: Sendable {
         ])
     }
 
+    /// 渠道列表(面板展示接入渠道与启停状态)。
+    /// 后端 per_page 上限 200,渠道更多时循环补齐。
+    func channels() async throws -> [Channel] {
+        var all: [Channel] = []
+        var page = 1
+        while page <= 50 {
+            let data: PageData<Channel> = try await get("channels", [
+                URLQueryItem(name: "page", value: String(page)),
+                URLQueryItem(name: "per_page", value: "200"),
+            ])
+            all.append(contentsOf: data.items)
+            if data.items.isEmpty || all.count >= data.total { break }
+            page += 1
+        }
+        return all
+    }
+
+    /// 渠道上游账户余额(按 BaseURL 推断厂家,服务端 5 分钟 TTL 缓存)。
+    func channelBalances() async throws -> ChannelBalanceList {
+        try await get("channels/balances", [])
+    }
+
+    /// 花费预测;period 取 today | month。
+    func costForecast(period: String) async throws -> CostForecast {
+        try await get("stats/cost/forecast", [URLQueryItem(name: "period", value: period)])
+    }
+
+    /// 计费展示设置(币种/汇率/月预算)。
+    func billing() async throws -> BillingSettings {
+        try await get("settings/billing", [])
+    }
+
     // MARK: - 内部
 
     private func get<T: Decodable & Sendable>(_ path: String, _ query: [URLQueryItem]) async throws -> T {

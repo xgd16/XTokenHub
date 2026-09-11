@@ -26,6 +26,7 @@ type Deps struct {
 	Cleanup        *admin.CleanupHandler
 	WS             *admin.WSHandler
 	SessionHeaders *admin.SessionHeaderConfigHandler
+	Pricing        *admin.PricingHandler
 	Gateway        *gwhandler.Handler
 	WebFS          fs.FS // 前端产物（可为 nil：仅 API）
 }
@@ -72,10 +73,20 @@ func Register(engine *gin.Engine, d *Deps) {
 		api.GET("/stats/lifetime", d.Stats.Lifetime)
 		api.GET("/stats/trend-by-model", d.Stats.TrendByModel)
 		api.GET("/stats/live-sessions", d.Stats.LiveSessions)
+		api.GET("/stats/cost/forecast", d.Pricing.Forecast)
+		api.GET("/stats/cost/unpriced", d.Pricing.Unpriced)
+		api.POST("/stats/cost/recompute", d.Pricing.Recompute)
 		api.GET("/settings/session-headers", d.SessionHeaders.List)
 		api.POST("/settings/session-headers", d.SessionHeaders.Create)
 		api.DELETE("/settings/session-headers/:id", d.SessionHeaders.Delete)
 		api.PUT("/settings/session-headers/:key/toggle", d.SessionHeaders.ToggleEnabled)
+		api.GET("/settings/prices", d.Pricing.ListPrices)
+		api.POST("/settings/prices", d.Pricing.CreatePrice)
+		api.POST("/settings/prices/sync", d.Pricing.SyncPrices)
+		api.PUT("/settings/prices/:id", d.Pricing.UpdatePrice)
+		api.DELETE("/settings/prices/:id", d.Pricing.DeletePrice)
+		api.GET("/settings/billing", d.Pricing.GetBilling)
+		api.PUT("/settings/billing", d.Pricing.UpdateBilling)
 	}
 
 	// 网关端点

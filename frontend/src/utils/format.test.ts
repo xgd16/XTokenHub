@@ -86,7 +86,7 @@ describe('transform', () => {
   it('toTrendSeries 映射错误与 token', () => {
     const now = new Date('2026-09-05T10:00:00')
     const series = toTrendSeries(
-      [{ date: '2026-09-05', requests: 10, total_tokens: 500, error_requests: 2 }],
+      [{ date: '2026-09-05', requests: 10, total_tokens: 500, error_requests: 2, cost_usd: 0 }],
       1,
       now,
     )
@@ -96,8 +96,8 @@ describe('transform', () => {
   it('toModelRank 截断 TopN 并计算缓存百分比', () => {
     const rank = toModelRank(
       [
-        { name: 'gpt-4o', requests: 10, total_tokens: 100, cached_tokens: 50, cache_rate: 0.5, avg_ms: 1 },
-        { name: 'claude', requests: 5, total_tokens: 40, cached_tokens: 0, cache_rate: 0, avg_ms: 1 },
+        { name: 'gpt-4o', requests: 10, total_tokens: 100, cached_tokens: 50, cache_rate: 0.5, avg_ms: 1, cost_usd: 0 },
+        { name: 'claude', requests: 5, total_tokens: 40, cached_tokens: 0, cache_rate: 0, avg_ms: 1, cost_usd: 0 },
       ],
       1,
     )
@@ -117,6 +117,7 @@ describe('transform', () => {
       cache_hit_rate: 0.25,
       avg_duration_ms: 233.6,
       native_ratio: 0.5,
+      cost_usd: 1.23,
     })
     expect(cards.requests).toBe(100)
     expect(cards.hitPercent).toBe('25.0%')

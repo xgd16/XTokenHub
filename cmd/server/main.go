@@ -21,6 +21,7 @@ import (
 	"xtokenhub/internal/gateway"
 	"xtokenhub/internal/handler/admin"
 	gwhandler "xtokenhub/internal/handler/gateway"
+	"xtokenhub/internal/model"
 	"xtokenhub/internal/pkg/logger"
 	"xtokenhub/internal/provider"
 	"xtokenhub/internal/repository"
@@ -88,6 +89,8 @@ func main() {
 	logRepo := repository.NewRequestLogRepository(db)
 	customRepo := repository.NewCustomModelRepository(db)
 	sessionHeaderRepo := repository.NewSessionHeaderConfigRepo(db)
+	priceRepo := repository.NewModelPriceRepository(db)
+	billingRepo := repository.NewBillingSettingsRepository(db)
 	prober := provider.NewProber(time.Duration(cfg.Gateway.UpstreamTimeout) * time.Second)
 
 	channelSvc := service.NewChannelService(chRepo, prober, bus)
@@ -103,8 +106,40 @@ func main() {
 	if err := sessionHeaderSvc.EnsureDefaults(context.Background()); err != nil {
 		log.Warn("种子化会话标识配置失败", logger.Err(err))
 	}
+
+	// 计价：价格表 + 请求级费用 + 花费预测（价格表为空时首次启动自动同步一次）
+	costSvc := service.NewCostService(
+		priceRepo, logRepo, billingRepo,
+		provider.NewPricingClient(time.Duration(cfg.Pricing.TimeoutSeconds)*time.Second),
+		service.CostOptions{
+			Enabled:      cfg.Pricing.Enabled,
+			AutoSync:     cfg.Pricing.AutoSync,
+			SyncInterval: time.Duration(cfg.Pricing.SyncIntervalHours) * time.Hour,
+			SourceURL:    cfg.Pricing.SourceURL,
+			// 仅首次初始化入库，之后以设置页的值为准
+			InitialBilling: model.BillingSettings{
+				DisplayCurrency:  cfg.Billing.DisplayCurrency,
+				USDRate:          cfg.Billing.USDRate,
+				MonthlyBudgetUSD: cfg.Billing.MonthlyBudgetUSD,
+			},
+		},
+	)
+	costSvc.SetChannels(chRepo)
+	if err := costSvc.EnsureDefaults(context.Background()); err != nil {
+		log.Warn("初始化计价服务失败", logger.Err(err))
+	}
+	priceCtx, priceCancel := context.WithCancel(context.Background())
+	go costSvc.RunAutoSync(priceCtx)
+	// 存量日志补算：补上启用计价之前的历史请求费用（幂等，无变化不写库）
+	go func() {
+		if _, err := costSvc.Recompute(priceCtx, time.Time{}, time.Time{}, true); err != nil {
+			log.Warn("存量日志费用补算失败", logger.Err(err))
+		}
+	}()
+
 	exec := gateway.NewExecutor(chRepo, logRepo, bus, time.Duration(cfg.Gateway.UpstreamTimeout)*time.Second)
 	exec.SetCustomModels(customRepo)
+	exec.SetPricing(costSvc)
 	throughput := gateway.NewThroughput(bus, 500*time.Millisecond, 5*time.Second)
 	exec.SetThroughput(throughput)
 	thCtx, thCancel := context.WithCancel(context.Background())
@@ -137,6 +172,7 @@ func main() {
 		Cleanup:        admin.NewCleanupHandler(retSvc),
 		WS:             admin.NewWSHandler(hub),
 		SessionHeaders: admin.NewSessionHeaderConfigHandler(sessionHeaderSvc),
+		Pricing:        admin.NewPricingHandler(costSvc),
 		Gateway:        gwhandler.NewHandler(exec, keySvc, cfg.Gateway.RequireKey, cfg.Gateway.MaxBodyBytes),
 	}
 	// 网关按配置的会话 Header 名单提取会话标识（默认 X-Session-Id + 自定义扩展）
@@ -175,6 +211,7 @@ func main() {
 	}
 	thCancel()
 	retCancel()
+	priceCancel()
 	hub.Close()
 	bus.Wait()
 	if sqlDB, err := db.DB(); err == nil {

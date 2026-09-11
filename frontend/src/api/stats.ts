@@ -12,6 +12,8 @@ export interface Summary {
   cache_hit_rate: number
   avg_duration_ms: number
   native_ratio: number
+  /** 窗口内费用合计（USD）。 */
+  cost_usd: number
 }
 
 export interface TrendPoint {
@@ -20,6 +22,7 @@ export interface TrendPoint {
   requests: number
   total_tokens: number
   error_requests: number
+  cost_usd: number
 }
 
 export type TrendBucket = 'minute' | 'hour' | 'day'
@@ -31,6 +34,8 @@ export interface GroupStat {
   cached_tokens: number
   cache_rate: number
   avg_ms: number
+  /** 该维度的费用合计（USD）。 */
+  cost_usd: number
 }
 
 /** 模型在单个时间窗（1h/24h/7d/30d）内的使用量。 */

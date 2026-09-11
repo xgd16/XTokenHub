@@ -18,6 +18,12 @@ export interface RequestLog {
   cached_tokens: number
   cache_write_tokens: number
   cache_hit_rate: number
+  /** 本请求费用（USD）；未定价模型与失败请求为 0。 */
+  cost_usd: number
+  /** 计价所用的上游 usage 口径：openai | anthropic。 */
+  usage_style?: string
+  /** 计价命中的时段：peak | off_peak；模型未配置时段价时为空。 */
+  price_period?: string
   duration_ms: number
   upstream_status: number
   client_ip: string

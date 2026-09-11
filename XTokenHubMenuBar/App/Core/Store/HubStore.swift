@@ -41,6 +41,16 @@ final class HubStore {
     private(set) var trendRange: TrendRange = .live
     private(set) var modelTop: [GroupStat] = []
     private(set) var callersTop: [GroupStat] = []
+    /// 接入渠道(用于展示启停状态与余额)。
+    private(set) var channels: [Channel] = []
+    /// 渠道余额,按 channel_id 索引;WS 推送直接合并。
+    private(set) var balances: [Int64: ChannelBalance] = [:]
+    /// 今日花费与预测(随快速刷新走)。
+    private(set) var costToday: CostForecast?
+    /// 本月花费与预测(随慢速刷新走)。
+    private(set) var costMonth: CostForecast?
+    /// 计费展示设置(币种/汇率/月预算),金额格式化依赖它。
+    private(set) var billing: BillingSettings?
     /// 实时请求流:WS started/completed 增量维护,首屏由 /logs 填充。
     private(set) var recentRequests: [RequestLog] = []
     private(set) var tokensPerSec: Double = 0
@@ -59,6 +69,7 @@ final class HubStore {
     private var started = false
     private var rebuildTask: Task<Void, Never>?
     private var statsRefreshTask: Task<Void, Never>?
+    private var channelsRefreshTask: Task<Void, Never>?
     private var periodicTask: Task<Void, Never>?
     private let maxLiveRows = 50
 
@@ -75,6 +86,8 @@ final class HubStore {
                 // 让趋势窗口随时间滑动(无流量时 WS 不产生 stats.updated);慢速数据同步刷新
                 await self.refreshQuick()
                 await self.fetchCallers()
+                // 余额服务端有 5 分钟 TTL,轮询基本命中缓存
+                await self.fetchBalances()
             }
         }
     }
@@ -117,6 +130,11 @@ final class HubStore {
         modelTop = []
         callersTop = []
         recentRequests = []
+        channels = []
+        balances = [:]
+        costToday = nil
+        costMonth = nil
+        billing = nil
 
         socket?.disconnect()
         let sock = HubSocket(url: HubURL.wsBase(base))
@@ -148,7 +166,11 @@ final class HubStore {
             upsert(log)
         case .statsUpdated:
             scheduleStatsRefresh()
-        case .channelUpdated, .ignored:
+        case .channelBalanceUpdated(let payload):
+            mergeBalance(payload)
+        case .channelUpdated:
+            scheduleChannelsRefresh()
+        case .ignored:
             break
         }
     }
@@ -176,6 +198,36 @@ final class HubStore {
         }
     }
 
+    /// 渠道启停/探测变化:防抖 1s 后重拉渠道列表(配置型数据,变化不频繁)。
+    private func scheduleChannelsRefresh() {
+        guard channelsRefreshTask == nil else { return }
+        channelsRefreshTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard let self, !Task.isCancelled else { return }
+            self.channelsRefreshTask = nil
+            await self.fetchChannels()
+        }
+    }
+
+    /// WS 余额推送:直接合并,避免为了一个渠道余额重拉整批。
+    private func mergeBalance(_ payload: ChannelBalancePayload) {
+        var entry = balances[payload.channelID] ?? ChannelBalance(
+            channelID: payload.channelID,
+            channelName: payload.channelName,
+            provider: payload.balance.provider,
+            supported: true,
+            ok: true,
+            balance: payload.balance,
+            error: nil,
+            fetchedAt: payload.balance.fetchedAt
+        )
+        entry.balance = payload.balance
+        entry.ok = true
+        entry.error = nil
+        entry.fetchedAt = payload.balance.fetchedAt
+        balances[payload.channelID] = entry
+    }
+
     // MARK: - REST
 
     private func refreshQuick() async {
@@ -191,6 +243,8 @@ final class HubStore {
         } catch {
             lastErrorMessage = error.localizedDescription
         }
+        // 花费是可选增强:接口缺失(旧后端)时不能拖垮核心汇总
+        costToday = try? await api.costForecast(period: "today")
         await fetchTrend()
     }
 
@@ -219,6 +273,33 @@ final class HubStore {
         }
     }
 
+    /// 渠道列表:失败静默(旧后端无此端点时面板显示空态,不打扰其余数据)。
+    private func fetchChannels() async {
+        guard let api else { return }
+        if let list = try? await api.channels() {
+            channels = list
+        }
+    }
+
+    /// 渠道余额:失败静默并保留上次已知值,不打扰主列表。
+    private func fetchBalances() async {
+        guard let api else { return }
+        guard let list = try? await api.channelBalances() else { return }
+        balances = Dictionary(uniqueKeysWithValues: list.items.map { ($0.channelID, $0) })
+    }
+
+    /// 计费设置:决定金额展示币种与汇率,失败时回退 USD。
+    private func fetchBilling() async {
+        guard let api else { return }
+        billing = try? await api.billing()
+    }
+
+    /// 本月花费与预测(慢速数据,随重连/手动刷新走)。
+    private func fetchCostMonth() async {
+        guard let api else { return }
+        costMonth = try? await api.costForecast(period: "month")
+    }
+
     private func refreshAll() async {
         guard let api else { return }
         await refreshQuick()
@@ -232,5 +313,9 @@ final class HubStore {
             lastErrorMessage = error.localizedDescription
         }
         await fetchCallers()
+        await fetchChannels()
+        await fetchBilling()
+        await fetchCostMonth()
+        await fetchBalances()
     }
 }

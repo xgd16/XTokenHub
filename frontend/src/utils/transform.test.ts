@@ -7,8 +7,8 @@ describe('toTrendSeries', () => {
 
   it('窗口内日期对位转换', () => {
     const points: TrendPoint[] = [
-      { date: '2026-09-04', requests: 10, error_requests: 1, total_tokens: 500 },
-      { date: '2026-09-05', requests: 3, error_requests: 0, total_tokens: 120 },
+      { date: '2026-09-04', requests: 10, error_requests: 1, total_tokens: 500, cost_usd: 0 },
+      { date: '2026-09-05', requests: 3, error_requests: 0, total_tokens: 120, cost_usd: 0 },
     ]
     expect(toTrendSeries(points, 2, NOW)).toEqual([
       { date: '2026-09-04', requests: 10, errors: 1, tokens: 500 },
@@ -17,7 +17,7 @@ describe('toTrendSeries', () => {
   })
 
   it('后端只返回有数据的日子，空缺日期补 0', () => {
-    const points: TrendPoint[] = [{ date: '2026-09-04', requests: 14, error_requests: 0, total_tokens: 900 }]
+    const points: TrendPoint[] = [{ date: '2026-09-04', requests: 14, error_requests: 0, total_tokens: 900, cost_usd: 0 }]
     const out = toTrendSeries(points, 5, NOW)
     expect(out.map((p) => p.date)).toEqual(['2026-09-01', '2026-09-02', '2026-09-03', '2026-09-04', '2026-09-05'])
     expect(out[3]).toEqual({ date: '2026-09-04', requests: 14, errors: 0, tokens: 900 })
@@ -41,7 +41,7 @@ describe('toBucketSeries', () => {
   it('分钟桶按本地 HH:mm 生成标签并补零', () => {
     const now = new Date('2026-09-05T10:03:30')
     const out = toBucketSeries(
-      [{ date: '', ts: Math.floor(new Date('2026-09-05T10:02:00').getTime() / 1000), requests: 5, error_requests: 1, total_tokens: 90 }],
+      [{ date: '', ts: Math.floor(new Date('2026-09-05T10:02:00').getTime() / 1000), requests: 5, error_requests: 1, total_tokens: 90, cost_usd: 0 }],
       60,
       4,
       now,
@@ -61,16 +61,16 @@ describe('toBucketSeries', () => {
 describe('toModelRank', () => {
   it('按 Top N 截断并计算缓存百分比', () => {
     const rows: GroupStat[] = [
-      { name: 'gpt-4o', requests: 8, total_tokens: 900, cached_tokens: 400, cache_rate: 0.432, avg_ms: 120 },
-      { name: '', requests: 2, total_tokens: 10, cached_tokens: 0, cache_rate: 0, avg_ms: 30 },
+      { name: 'gpt-4o', requests: 8, total_tokens: 900, cached_tokens: 400, cache_rate: 0.432, avg_ms: 120, cost_usd: 0 },
+      { name: '', requests: 2, total_tokens: 10, cached_tokens: 0, cache_rate: 0, avg_ms: 30, cost_usd: 0 },
     ]
     const rank = toModelRank(rows, 1)
     expect(rank).toHaveLength(1)
-    expect(rank[0]).toEqual({ name: 'gpt-4o', requests: 8, tokens: 900, cachePercent: 43.2 })
+    expect(rank[0]).toEqual({ name: 'gpt-4o', requests: 8, tokens: 900, costUSD: 0, cachePercent: 43.2 })
   })
 
   it('空模型名归为 unknown；null 安全', () => {
-    expect(toModelRank([{ name: '', requests: 1, total_tokens: 2, cached_tokens: 0, cache_rate: 0, avg_ms: 5 }])[0].name).toBe('unknown')
+    expect(toModelRank([{ name: '', requests: 1, total_tokens: 2, cached_tokens: 0, cache_rate: 0, avg_ms: 5, cost_usd: 0 }])[0].name).toBe('unknown')
     expect(toModelRank(null)).toEqual([])
     expect(toModelRank(undefined)).toEqual([])
   })
@@ -89,6 +89,7 @@ describe('toStatCards', () => {
       cache_hit_rate: 0.4,
       avg_duration_ms: 123.6,
       native_ratio: 0.75,
+      cost_usd: 0,
     }
     expect(toStatCards(s)).toEqual({
       requests: 12,
@@ -257,6 +258,7 @@ function mkLog(over: Partial<RequestLog>): RequestLog {
     cached_tokens: 0,
     cache_write_tokens: 0,
     cache_hit_rate: 0,
+    cost_usd: 0,
     duration_ms: 0,
     upstream_status: 200,
     client_ip: '',

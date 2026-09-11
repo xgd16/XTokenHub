@@ -10,6 +10,7 @@ import { logApi, type CleanupStatus, type LogQuery, type RequestLog } from '../a
 import { WS_EVENTS, useWsEvent, useWsReconnected } from '../api/ws'
 import { agentShort, compactCN, duration, fullTime, hitRateColor, modeShort, percent, protocolShort, timeOf } from '../utils/format'
 import { useIsMobile } from '../utils/useIsMobile'
+import { useMoneyFormat } from '../utils/useMoneyFormat'
 
 const PROTOCOL_OPTIONS = [
   { value: 'chat_completions', label: 'Chat Completions' },
@@ -30,8 +31,25 @@ const HOUR_OPTIONS = [
 /** 进行中请求：实时推送来的行尚未落库（无 id），完成事件按 req_id 原位替换。 */
 const isPending = (r: RequestLog) => !r.id && !!r.req_id
 
-/** 桌面端列。 */
-const LOG_COLUMNS: TableColumnsType<RequestLog> = [
+/** 金额格式化签名（由 useMoneyFormat 提供，随展示币种/汇率变化）。 */
+type MoneyFormatter = (usd: number) => string
+
+/** 花费列的悬浮说明：解释计价口径与命中的高峰/空闲时段。 */
+export function costTip(r: RequestLog): string {
+  const parts: string[] = []
+  if (r.usage_style) parts.push(`计价口径 ${r.usage_style}`)
+  if (r.price_period === 'off_peak') parts.push('空闲时段（错峰价）')
+  else if (r.price_period === 'peak') parts.push('高峰时段')
+  if (parts.length === 0) return '未定价模型记 0'
+  return parts.join(' · ')
+}
+
+/**
+ * 桌面端列。做成工厂函数而非常量：花费列要按当前展示币种格式化，
+ * 而格式化函数只能在组件内通过 useMoneyFormat 取得。
+ */
+export function logColumns(money: MoneyFormatter): TableColumnsType<RequestLog> {
+  return [
   {
     key: 'time',
     title: '时间',
@@ -119,6 +137,21 @@ const LOG_COLUMNS: TableColumnsType<RequestLog> = [
     },
   },
   {
+    key: 'cost',
+    title: '花费',
+    dataIndex: 'cost_usd',
+    width: 100,
+    sorter: (a, b) => (a.cost_usd || 0) - (b.cost_usd || 0),
+    render: (_, r) =>
+      isPending(r) ? (
+        <span style={{ color: 'var(--text-faint)' }}>—</span>
+      ) : (
+        <Tooltip title={costTip(r)}>
+          <span className="mono">{money(r.cost_usd || 0)}</span>
+        </Tooltip>
+      ),
+  },
+  {
     key: 'duration',
     title: '耗时',
     dataIndex: 'duration_ms',
@@ -144,10 +177,12 @@ const LOG_COLUMNS: TableColumnsType<RequestLog> = [
         <Tag color="success" style={{ background: 'transparent' }}>{v}</Tag>
       ),
   },
-]
+  ]
+}
 
 /** 移动端列：时间/模型/Token 合计/状态，其余收进展开行。 */
-export const MOBILE_LOG_COLUMNS: TableColumnsType<RequestLog> = [
+export function mobileLogColumns(money: MoneyFormatter): TableColumnsType<RequestLog> {
+  return [
   {
     key: 'time',
     title: '时间',
@@ -179,6 +214,18 @@ export const MOBILE_LOG_COLUMNS: TableColumnsType<RequestLog> = [
       ),
   },
   {
+    key: 'cost',
+    title: '花费',
+    dataIndex: 'cost_usd',
+    width: 76,
+    render: (_, r) =>
+      isPending(r) ? (
+        <span style={{ color: 'var(--text-faint)' }}>—</span>
+      ) : (
+        <span className="mono" style={{ fontSize: 11 }}>{money(r.cost_usd || 0)}</span>
+      ),
+  },
+  {
     key: 'status',
     title: '状态',
     dataIndex: 'upstream_status',
@@ -194,12 +241,14 @@ export const MOBILE_LOG_COLUMNS: TableColumnsType<RequestLog> = [
         <Tag color="success" style={{ background: 'transparent' }}>{v}</Tag>
       ),
   },
-]
+  ]
+}
 
 /** 请求日志页。 */
 export default function RequestLogs() {
   const { message } = App.useApp()
   const isMobile = useIsMobile()
+  const { format: money } = useMoneyFormat()
   const [items, setItems] = useState<RequestLog[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -435,7 +484,7 @@ export default function RequestLogs() {
           pageSizeOptions: [10, 20, 50, 100],
           showTotal: (t) => <span className="mono" style={{ color: 'var(--text-faint)' }}>共 {t} 条</span>,
         }}
-        columns={isMobile ? MOBILE_LOG_COLUMNS : LOG_COLUMNS}
+        columns={isMobile ? mobileLogColumns(money) : logColumns(money)}
         expandable={isMobile ? { expandedRowRender: (r) => <LogDetail r={r} pending={isPending(r)} /> } : undefined}
       />
     </Card>

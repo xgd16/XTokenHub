@@ -9,10 +9,16 @@ const FALLBACK_CELL = 10
 /** 自适应下限：低于该尺寸改为横向滚动，保证可点。 */
 const MIN_CELL = 8
 /** 自适应上限：避免超宽屏下格子大得突兀。 */
-const MAX_CELL = 26
+const MAX_CELL = 40
 /** 间隙随格子等比缩放。 */
 const GAP_RATIO = 0.18
-const PAD = { l: 6, r: 6 }
+const PAD = { l: 6, r: 6, b: 4 }
+/** 月份标签与格子的垂直间隙。 */
+const LABEL_GAP = 8
+/** 容器最小高度：避免首帧塌陷，同时保住窄屏可用性。 */
+const MIN_BOX_H = 120
+/** 卡片偏扁时，热力图最多把容器抬到该高度去撑满宽度（同行卡片会被一并拉高，故设上限）。 */
+const MAX_BOX_H = 300
 
 interface Props {
   data: HeatmapData
@@ -26,6 +32,21 @@ interface Hover {
   cy: number
   date: string
   text: string
+}
+
+/** 给定格子尺寸下的完整排版结果：宽高都由真实 gap / 标签高度推导，供反解与收缩共用。 */
+function layout(cell: number, cols: number, rows: number) {
+  const gap = Math.max(2, Math.round(cell * GAP_RATIO))
+  const labelFs = Math.max(10, Math.min(18, Math.round(cell * 0.6)))
+  const padT = labelFs + LABEL_GAP
+  return {
+    cell,
+    gap,
+    labelFs,
+    padT,
+    W: PAD.l + cols * (cell + gap) - gap + PAD.r,
+    H: padT + rows * (cell + gap) - gap + PAD.b,
+  }
 }
 
 /** GitHub 风格 Token 活动热力图：格子尺寸随容器宽高自适应（移动端过窄时横向可滚动），悬浮显示明细。 */
@@ -50,28 +71,23 @@ export default function TokenHeatmap({ data, mode = 'daily', ariaLabel = 'Token 
     const cols = data.columns.length
     const rows = Math.max(...data.columns.map((c) => c.cells.length), 1)
 
-    let cell = FALLBACK_CELL
-    if (box && box.w > 0) {
-      // 间隙按 GAP_RATIO 随格子缩放，反解：cell = 可用宽 / (cols + (cols-1)*ratio)
-      const byW = (box.w - PAD.l - PAD.r) / (cols + (cols - 1) * GAP_RATIO)
-      const byH = box.h > 0 ? (box.h - 30) / (rows + (rows - 1) * GAP_RATIO) : Infinity
-      const fitted = Math.floor(Math.min(byW, byH))
-      if (fitted >= MIN_CELL) cell = Math.min(MAX_CELL, fitted)
-      else cell = MIN_CELL // 容器过窄：保底尺寸 + 横向滚动
-    }
-    const gap = Math.max(2, Math.round(cell * GAP_RATIO))
-    const labelFs = Math.max(10, Math.min(13, Math.round(cell * 0.7)))
-    const padT = labelFs + 8
-    return {
-      cols,
-      rows,
-      cell,
-      gap,
-      labelFs,
-      padT,
-      W: PAD.l + cols * (cell + gap) - gap + PAD.r,
-      H: padT + rows * (cell + gap) - gap + 4,
-    }
+    // 宽度反解：gap 随 cell 等比缩放，cell ≈ 可用宽 / (cols + (cols-1)*ratio)
+    const availW = box && box.w > 0 ? box.w - PAD.l - PAD.r : null
+    let cell = availW == null
+      ? FALLBACK_CELL
+      : Math.min(MAX_CELL, Math.floor(availW / (cols + (cols - 1) * GAP_RATIO)))
+    if (cell < MIN_CELL) cell = MIN_CELL // 容器过窄：保底尺寸 + 横向滚动
+
+    // 反解用了连续近似、gap 又要取整，横向再收敛一次（MIN_CELL 时保留横向滚动）
+    while (cell > MIN_CELL && availW != null && layout(cell, cols, rows).W > availW) cell--
+
+    // 撑满宽度所需的高度：容器被同行卡片拉得比这还高时无副作用，比这矮就把容器抬起来
+    const boxMinH = availW == null ? MIN_BOX_H : Math.min(MAX_BOX_H, Math.max(MIN_BOX_H, layout(cell, cols, rows).H))
+    const availH = Math.max(boxMinH, box && box.h > 0 ? box.h : 0)
+
+    // 高度是硬约束：正方格子在可用高度内放不下就继续收缩
+    while (cell > MIN_CELL && layout(cell, cols, rows).H > availH) cell--
+    return { cols, rows, boxMinH, ...layout(cell, cols, rows) }
   }, [data, box])
 
   if (data.columns.length === 0) {
@@ -92,7 +108,7 @@ export default function TokenHeatmap({ data, mode = 'daily', ariaLabel = 'Token 
   return (
     <div
       ref={boxRef}
-      style={{ flex: 1, minHeight: 120, overflowX: 'auto', display: 'flex', alignItems: 'center' }}
+      style={{ flex: 1, minHeight: geo.boxMinH, overflowX: 'auto', display: 'flex', alignItems: 'center' }}
     >
       <svg
         width={geo.W}

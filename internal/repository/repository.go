@@ -56,6 +56,19 @@ type RequestLogRepository interface {
 	// DeleteBefore 分批删除 created_at 早于 cutoff 的日志，单批最多 limit 行，返回实际删除行数。
 	// 供保留期清理任务使用；需反复调用直至返回数小于 limit。
 	DeleteBefore(ctx context.Context, cutoff time.Time, limit int) (int64, error)
+
+	// CostSince 时间窗内的费用合计（USD）与计入的请求数，供花费预测使用。
+	CostSince(ctx context.Context, since, until time.Time) (float64, int64, error)
+	// CostByDay 按日聚合费用，供预测的日均基准（run-rate）使用。
+	CostByDay(ctx context.Context, since time.Time) ([]DayCost, error)
+	// ModelsWithUsage 时间窗内有用量的模型及其用量，按总 token 倒序，最多 limit 条。
+	// 是否「未定价」由 service 层用与计价热路径相同的别名匹配判定：SQL 只能精确同名
+	// 匹配，而价格表键常带厂商前缀（如 zai/glm-5.3-flash），在 SQL 里过滤会误报。
+	ModelsWithUsage(ctx context.Context, since time.Time, limit int) ([]ModelUsage, error)
+	// RecomputeBatch 取一批待重算费用的日志（id 升序，afterID 为游标）；onlyMissing 时只取 cost_usd <= 0 的行。
+	RecomputeBatch(ctx context.Context, from, to time.Time, afterID int64, limit int, onlyMissing bool) ([]model.RequestLog, error)
+	// UpdateCost 回写单条日志的费用、计价口径与计价时段。
+	UpdateCost(ctx context.Context, id int64, costUSD float64, style model.UsageStyle, period model.PricePeriod) error
 }
 
 // LogFilter 日志筛选条件，零值表示不过滤。
@@ -113,15 +126,17 @@ type Summary struct {
 	CacheHitRate  float64 `json:"cache_hit_rate"`
 	AvgDurationMS float64 `json:"avg_duration_ms"`
 	NativeRatio   float64 `json:"native_ratio"` // 原生透传占比
+	CostUSD       float64 `json:"cost_usd"`     // 窗口内费用合计（USD）
 }
 
 // TrendPoint 趋势点。按日查询时 Date 为日期键；分桶查询时 Ts 为桶起点 Unix 秒。
 type TrendPoint struct {
-	Date        string `json:"date"`
-	Ts          int64  `json:"ts,omitempty"`
-	Requests    int64  `json:"requests"`
-	TotalTokens int64  `json:"total_tokens"`
-	ErrorReqs   int64  `json:"error_requests"`
+	Date        string  `json:"date"`
+	Ts          int64   `json:"ts,omitempty"`
+	Requests    int64   `json:"requests"`
+	TotalTokens int64   `json:"total_tokens"`
+	ErrorReqs   int64   `json:"error_requests"`
+	CostUSD     float64 `json:"cost_usd"`
 }
 
 // GroupStat 按维度聚合。
@@ -132,6 +147,46 @@ type GroupStat struct {
 	CachedToken int64   `json:"cached_tokens"`
 	CacheRate   float64 `json:"cache_rate"`
 	AvgMS       float64 `json:"avg_ms"`
+	CostUSD     float64 `json:"cost_usd"`
+}
+
+// DayCost 单日费用聚合。
+type DayCost struct {
+	Date     string  `json:"date"` // YYYY-MM-DD（本地时区）
+	Requests int64   `json:"requests"`
+	CostUSD  float64 `json:"cost_usd"`
+}
+
+// ModelUsage 时间窗内有用量的模型及其用量。
+type ModelUsage struct {
+	Model       string `json:"model"`
+	Requests    int64  `json:"requests"`
+	TotalTokens int64  `json:"total_tokens"`
+}
+
+// ModelPriceRepository 模型价格数据访问接口。
+type ModelPriceRepository interface {
+	Create(ctx context.Context, p *model.ModelPrice) error
+	Update(ctx context.Context, p *model.ModelPrice) error
+	Delete(ctx context.Context, id int64) error
+	GetByID(ctx context.Context, id int64) (*model.ModelPrice, error)
+	// GetByModel 按模型名查价格，不存在返回 gorm.ErrRecordNotFound。
+	GetByModel(ctx context.Context, name string) (*model.ModelPrice, error)
+	List(ctx context.Context) ([]model.ModelPrice, error)
+	// ListPaged 分页查询，q 为模型名模糊匹配（空 = 不限），usedOnly 只返回有用量的模型。
+	ListPaged(ctx context.Context, q string, usedOnly bool, offset, limit int) ([]model.ModelPrice, int64, error)
+	// ReplaceSynced 整体替换同步来源的价格（事务内先删 source=synced 再批量写入），
+	// 手工配置（source=manual）的行始终保留。返回写入行数与跳过的同名手工行数。
+	ReplaceSynced(ctx context.Context, prices []model.ModelPrice) (int, int, error)
+	// Count 价格表总行数。
+	Count(ctx context.Context) (int64, error)
+}
+
+// BillingSettingsRepository 计费展示设置数据访问接口。
+type BillingSettingsRepository interface {
+	// Get 读取单行设置，不存在返回 gorm.ErrRecordNotFound。
+	Get(ctx context.Context) (*model.BillingSettings, error)
+	Save(ctx context.Context, s *model.BillingSettings) error
 }
 
 // ModelWindow 模型在单个时间窗内的使用量。

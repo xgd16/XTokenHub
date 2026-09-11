@@ -78,7 +78,10 @@ func TestStatsFlexSince(t *testing.T) {
 
 	now := time.Now()
 	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
-	yesterday := midnight.Add(-time.Hour) // 昨天深夜，本地日界前
+	// 昨天 23:59：早于今天的日界（since=midnight 应排除），又在 now 起算的 24h 窗口内。
+	// 不能写成 midnight-1h（=23:00）——当前时刻晚于 23:00 时 now-24h 会晚于 23:00，
+	// 那条记录就落到窗口之外，测试在每天 23:00–24:00 必然失败。
+	yesterday := midnight.Add(-time.Minute)
 	for _, l := range []model.RequestLog{
 		{Model: "m1", Protocol: model.ProtocolChatCompletions, ForwardMode: model.ForwardNativePassthrough, PromptTokens: 10, CreatedAt: yesterday},
 		{Model: "m1", Protocol: model.ProtocolChatCompletions, ForwardMode: model.ForwardNativePassthrough, PromptTokens: 20, CreatedAt: now},

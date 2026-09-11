@@ -14,16 +14,19 @@ struct MenuBarContentView: View {
             header
             Divider()
             ScrollView(.vertical) {
-                GlassEffectContainer(spacing: 10) {
-                    VStack(alignment: .leading, spacing: 10) {
+                // 分区间距 16 > 容器 spacing 8:相邻玻璃不半融合,间隔里透出下层(控制中心的节奏)。
+                GlassEffectContainer(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 16) {
                         tiles
+                        costCard
+                        channelsCard
                         trendCard
                         modelCard
                         callersCard
                         liveCard
                     }
                     .padding(.horizontal, 2)
-                    .padding(.vertical, 1)
+                    .padding(.vertical, 2)
                 }
             }
             .frame(height: panelContentHeight)
@@ -109,29 +112,34 @@ struct MenuBarContentView: View {
 
     // MARK: - 统计磁贴(对齐 Web 两排卡片)
 
+    /// 九宫格:同为计数器但数量级差很大,故大数值的数量级(万/亿)降为次级字号。
     private var tiles: some View {
-        LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3),
-            spacing: 10
-        ) {
+        StatGrid(cells: [
             // 第一排 · 今天(对应 Web "请求总数/错误请求/Token 用量/缓存命中率/平均耗时/原生透传占比")
-            StatTile(title: "请求 · 今日", value: reqText, icon: "number", help: "当天请求总数")
-            StatTile(
+            StatItem(title: "请求 · 今日", value: reqText, icon: "number", help: "当天请求总数"),
+            StatItem(
                 title: "错误 · 今日",
                 value: errText,
                 icon: "exclamationmark.triangle",
                 tint: (store.summary?.errorRequests ?? 0) > 0 ? .red : .secondary,
                 help: "当天失败请求"
-            )
-            StatTile(title: "Token · 今日", value: TokenFormatter.compact(store.todayTokens), icon: "paperplane.fill", help: "今天 · prompt + completion")
-            StatTile(title: "缓存命中", value: cacheHitText, icon: "memorychip", help: "cached / prompt")
-            StatTile(title: "平均耗时", value: avgDurationText, icon: "clock", help: "今天成功请求均值")
-            StatTile(title: "透传占比", value: nativeRatioText, icon: "arrow.right.circle", help: "零转换直连上游")
+            ),
+            tokenItem(title: "Token · 今日", value: store.summary?.totalTokens, icon: "paperplane.fill", help: "今天 · prompt + completion"),
+            StatItem(title: "缓存命中", value: cacheHitText, icon: "memorychip", help: "cached / prompt"),
+            StatItem(title: "平均耗时", value: avgDurationText, icon: "clock", help: "今天成功请求均值"),
+            StatItem(title: "透传占比", value: nativeRatioText, icon: "arrow.right.circle", help: "零转换直连上游"),
             // 第二排 · 全历史(对应 Web "累计/峰值/连续天数")
-            StatTile(title: "累计 Token", value: lifetimeText, icon: "infinity", help: lifetimeHelp)
-            StatTile(title: "峰值 Token", value: peakText, icon: "arrow.up.forward.circle", help: peakHelp)
-            StatTile(title: "连续天数", value: streakText, icon: "flame", help: streakHelp)
-        }
+            tokenItem(title: "累计 Token", value: store.lifetime?.totalTokens, icon: "infinity", help: lifetimeHelp),
+            tokenItem(title: "峰值 Token", value: store.lifetime?.peakDayTokens, icon: "arrow.up.forward.circle", help: peakHelp),
+            StatItem(title: "连续天数", value: streakText, icon: "flame", tint: .orange, help: streakHelp),
+        ])
+    }
+
+    /// 大数值单元:万/亿后缀拆成次级字号,避免「9290.47万」读成一个长数字。
+    private func tokenItem(title: String, value: Int64?, icon: String, help: String) -> StatItem {
+        guard let value else { return StatItem(title: title, value: "—", icon: icon, help: help) }
+        let parts = TokenFormatter.splitCompact(value)
+        return StatItem(title: title, value: parts.number, unit: parts.unit, icon: icon, help: help)
     }
 
     private var reqText: String { store.summary.map { String($0.totalRequests) } ?? "—" }
@@ -152,9 +160,7 @@ struct MenuBarContentView: View {
         return String(format: "%.1f%%", ratio * 100)
     }
 
-    private var lifetimeText: String { store.lifetime.map { TokenFormatter.compact($0.totalTokens) } ?? "—" }
     private var lifetimeHelp: String { store.lifetime.map { "共 \($0.activeDays) 天有用量" } ?? "" }
-    private var peakText: String { store.lifetime.map { TokenFormatter.compact($0.peakDayTokens) } ?? "—" }
     private var peakHelp: String { store.lifetime?.peakDay ?? "单日最高" }
     private var streakText: String { store.lifetime.map { "\($0.currentStreak)" } ?? "—" }
     private var streakHelp: String {
@@ -162,10 +168,107 @@ struct MenuBarContentView: View {
         return "当前 \(lt.currentStreak) 天 · 最长 \(lt.maxStreak) 天"
     }
 
+    // MARK: - 花费(对齐 Web 仪表盘:今日 / 本月累计 / 本月预计)
+
+    private var costCard: some View {
+        PanelSection(title: "花费") {
+            VStack(spacing: 10) {
+                CostRow(
+                    label: "今日花费",
+                    value: money(store.costToday?.spentUSD),
+                    sub: todayCostSub,
+                    tint: .accentColor
+                )
+                CostRow(
+                    label: "本月累计",
+                    value: money(store.costMonth?.spentUSD),
+                    sub: budgetSub,
+                    tint: .primary
+                )
+                CostRow(
+                    label: "本月预计",
+                    value: money(store.costMonth?.projectedUSD),
+                    sub: monthCostSub,
+                    tint: .orange
+                )
+            }
+        }
+    }
+
+    /// 金额展示选项:币种与汇率来自设置页,未加载时按 USD。
+    private var moneyOptions: MoneyFormatter.Options {
+        MoneyFormatter.Options(
+            currency: store.billing?.displayCurrency ?? "USD",
+            rate: store.billing?.usdRate ?? 0
+        )
+    }
+
+    private func money(_ usd: Double?) -> String {
+        guard let usd else { return "—" }
+        return MoneyFormatter.format(usd: usd, options: moneyOptions)
+    }
+
+    private var todayCostSub: String {
+        guard let cost = store.costToday else { return "" }
+        if let projected = cost.projectedUSD {
+            return "预计今日 " + MoneyFormatter.format(usd: projected, options: moneyOptions)
+        }
+        return cost.reason ?? "样本不足"
+    }
+
+    private var monthCostSub: String {
+        guard let cost = store.costMonth else { return "" }
+        guard cost.projectedUSD != nil else { return cost.reason ?? "样本不足" }
+        return "\(basisLabel(cost.basis)) · 置信度\(confidenceLabel(cost.confidence))"
+    }
+
+    private var budgetSub: String {
+        guard let cost = store.costMonth, cost.budgetUSD > 0 else { return "" }
+        var text = "月度预算 " + MoneyFormatter.format(usd: cost.budgetUSD, options: moneyOptions)
+        if let date = cost.projectedExceededDate, !date.isEmpty {
+            text += " · 预计 \(date) 触及"
+        }
+        return text
+    }
+
+    private func basisLabel(_ basis: String) -> String {
+        basis == "run_rate" ? "近 7 日均速" : "本周期线性"
+    }
+
+    private func confidenceLabel(_ confidence: String) -> String {
+        switch confidence {
+        case "high": "高"
+        case "medium": "中"
+        default: "低"
+        }
+    }
+
+    // MARK: - 渠道与余额(余额为上游原币种,不做汇率折算)
+
+    private var channelsCard: some View {
+        PanelSection(title: channelsTitle) {
+            if store.channels.isEmpty {
+                emptyHint
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(store.channels) { channel in
+                        ChannelBalanceRow(channel: channel, entry: store.balances[channel.id])
+                    }
+                }
+            }
+        }
+    }
+
+    private var channelsTitle: String {
+        let enabled = store.channels.filter(\.isEnabled).count
+        guard !store.channels.isEmpty else { return "渠道 · 余额" }
+        return "渠道 · 余额 · 启用 \(enabled)/\(store.channels.count)"
+    }
+
     // MARK: - 趋势(带范围切换,对应 Web 实时/小时/7天/30天)
 
     private var trendCard: some View {
-        GlassCard {
+        PanelSection {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("Token 趋势")
@@ -201,7 +304,7 @@ struct MenuBarContentView: View {
     // MARK: - 模型 / 调用方排行
 
     private var modelCard: some View {
-        GlassCard(title: "模型 TOP · 今日") {
+        PanelSection(title: "模型 TOP · 今日") {
             if store.modelTop.isEmpty {
                 emptyHint
             } else {
@@ -221,7 +324,7 @@ struct MenuBarContentView: View {
     }
 
     private var callersCard: some View {
-        GlassCard(title: "调用方 TOP · 30 天") {
+        PanelSection(title: "调用方 TOP · 30 天") {
             if store.callersTop.isEmpty {
                 emptyHint
             } else {
@@ -243,18 +346,18 @@ struct MenuBarContentView: View {
     // MARK: - 实时请求流
 
     private var liveCard: some View {
-        GlassCard(title: "实时请求流") {
+        PanelSection(title: "实时请求流") {
             if store.recentRequests.isEmpty {
                 emptyHint
             } else {
                 ScrollView {
                     LazyVStack(spacing: 5) {
                         ForEach(store.recentRequests) { log in
-                            LiveRequestRow(log: log)
+                            LiveRequestRow(log: log, money: moneyOptions)
                         }
                     }
                 }
-                .frame(height: 160)
+                .frame(height: 260)
             }
         }
     }
@@ -270,29 +373,34 @@ struct MenuBarContentView: View {
     // MARK: - 底部操作
 
     private var footer: some View {
-        HStack(spacing: 8) {
-            Button {
-                NSWorkspace.shared.open(settings.httpBaseURL)
-            } label: {
-                Label("控制台", systemImage: "macwindow")
-            }
-            .buttonStyle(.glass)
+        // 相邻玻璃按钮同一容器,由系统决定融合与高光,避免各自成边。
+        GlassEffectContainer(spacing: 6) {
+            HStack(spacing: 8) {
+                Button {
+                    NSWorkspace.shared.open(settings.httpBaseURL)
+                } label: {
+                    Label("控制台", systemImage: "macwindow")
+                }
+                .buttonStyle(.glass)
 
-            Button {
-                openSettingsReliably()
-            } label: {
-                Label("设置", systemImage: "gearshape")
-            }
-            .buttonStyle(.glass)
+                Button {
+                    openSettingsReliably()
+                } label: {
+                    Label("设置", systemImage: "gearshape")
+                }
+                .buttonStyle(.glass)
 
-            Spacer(minLength: 8)
+                Spacer(minLength: 8)
 
-            Button {
-                NSApp.terminate(nil)
-            } label: {
-                Label("退出", systemImage: "power")
+                Button {
+                    NSApp.terminate(nil)
+                } label: {
+                    Label("退出", systemImage: "power")
+                }
+                .buttonStyle(.glass)
             }
-            .buttonStyle(.glass)
+            // 显式占满宽度:容器不应替内部的 Spacer 决定可用宽度,否则「退出」会挤到中间。
+            .frame(maxWidth: .infinity)
         }
     }
 
@@ -337,5 +445,100 @@ struct MenuBarContentView: View {
         case .connecting: .orange
         case .disconnected: .red
         }
+    }
+}
+
+// MARK: - 花费行
+
+/// 花费卡单行:左侧标题 + 右侧金额与副文案。
+/// 用纯文本行而非嵌套玻璃磁贴,避免与卡片玻璃材质叠加。
+private struct CostRow: View {
+    let label: String
+    let value: String
+    var sub: String = ""
+    var tint: Color = .primary
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(value)
+                    .font(.callout.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(tint)
+                    .contentTransition(.numericText())
+                if !sub.isEmpty {
+                    Text(sub)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - 渠道余额行
+
+/// 渠道行:状态点 + 名称 + 接口风格 + 原生币种余额。
+private struct ChannelBalanceRow: View {
+    let channel: Channel
+    let entry: ChannelBalance?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(channel.isEnabled ? Color.green : Color.secondary)
+                .frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(channel.name)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(channel.isEnabled ? .primary : .secondary)
+                    .lineLimit(1)
+                Text(channel.provider == "anthropic" ? "Anthropic" : "OpenAI 兼容")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            Text(balanceText)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(balanceTint)
+                .help(balanceHelp)
+        }
+        .opacity(channel.isEnabled ? 1 : 0.55)
+    }
+
+    private var balanceText: String {
+        guard let entry, entry.supported else { return "—" }
+        guard entry.ok, let info = entry.balance else { return "查询失败" }
+        return MoneyFormatter.formatBalance(info.total, currency: info.currency)
+    }
+
+    private var balanceTint: Color {
+        guard let entry, entry.supported else { return .secondary }
+        guard entry.ok, let info = entry.balance else { return .red }
+        return info.isAvailable ? .primary : .red
+    }
+
+    private var balanceHelp: String {
+        guard let entry else { return "余额查询中…" }
+        guard entry.supported else { return "该渠道不支持余额查询" }
+        guard entry.ok, let info = entry.balance else { return entry.error ?? "查询失败" }
+
+        var lines = [
+            "总额 " + MoneyFormatter.formatBalance(info.total, currency: info.currency),
+            "赠金 " + MoneyFormatter.formatBalance(info.granted, currency: info.currency),
+            "充值 " + MoneyFormatter.formatBalance(info.toppedUp, currency: info.currency),
+        ]
+        // 后端零值时间(0001-01-01)不展示
+        if let at = HubDate.parseRFC3339(entry.fetchedAt ?? ""), at.timeIntervalSince1970 > 0 {
+            lines.append("拉取于 \(at.formatted(date: .abbreviated, time: .shortened))")
+        }
+        if !info.isAvailable {
+            lines.append("账户当前无可用于 API 调用的余额")
+        }
+        return lines.joined(separator: "\n")
     }
 }

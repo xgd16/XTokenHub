@@ -6,8 +6,10 @@ enum HubEvent: Equatable, Sendable {
     case requestCompleted(RequestLog)
     case statsUpdated
     case throughput(tokensPerSec: Double, activeStreams: Int)
-    /// 渠道探测/启停/余额变化,面板暂不消费,仅保证解码不炸。
+    /// 渠道探测/启停变化,面板据此重拉渠道列表。
     case channelUpdated
+    /// 渠道余额变化(后端拉取成功后推送),面板直接合并,无需等下一次轮询。
+    case channelBalanceUpdated(ChannelBalancePayload)
     case ignored(String)
 }
 
@@ -35,7 +37,13 @@ enum WsDecoder {
         case "request.completed":
             guard let log = decodeLog(envelope["payload"]) else { return nil }
             return .requestCompleted(log)
-        case "channel.status_changed", "channel.balance_updated", "channel.probe_result":
+        case "channel.balance_updated":
+            // 载荷畸形时降级为 channelUpdated,仍触发重拉,不丢刷新
+            guard let payload = payloadData(envelope["payload"]),
+                  let p = try? JSONDecoder().decode(ChannelBalancePayload.self, from: payload)
+            else { return .channelUpdated }
+            return .channelBalanceUpdated(p)
+        case "channel.status_changed", "channel.probe_result":
             return .channelUpdated
         default:
             return .ignored(type)

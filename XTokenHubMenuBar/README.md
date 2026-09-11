@@ -6,16 +6,26 @@ XTokenHub 的 macOS 菜单栏伴侣应用 —— 类 iStat Menus 的 token 用�
 
 ## 功能
 
-- **菜单栏实时指标自由组合**:设置中按需勾选 图标 / 今日请求数 / 今日 Token / 缓存命中率 / 实时速度,如 `482 · 3214.45万 · 96.0% · 12/s`(默认 数量+速度)
-- **下拉玻璃面板**(内容对齐 Web 仪表盘):
+- **菜单栏实时指标自由组合**:设置中按需勾选 图标 / 今日请求数 / 今日 Token / 缓存命中率 / 今日花费 / 实时速度,如 `482 · 3214.45万 · 96.0% · $1.234 · 12/s`(默认 数量+速度)
+- **下拉面板**(内容对齐 Web 仪表盘;**系统 Liquid Glass 为主材质**,分区为独立玻璃模块:
+  - 玻璃形状「少而大」:九宫格等小区块合并成一块玻璃 + 内部发丝线分格,不做「每小块各自玻璃 + 密排」
+    —— 小玻璃的镜面硬边会在 10pt 窄缝里互相挤压成脏灰边(液态玻璃只适合大面、且要有间隔)
+  - 分区间距 16pt > `GlassEffectContainer` spacing 8pt,相邻玻璃不半融合,间隔里透出下层
+  - 面板内部不使用投影、不加不透明底色:玻璃的折射与高光自身就是层次
+  - 玻璃档位取 `.clear`(文档中更透的一档;`.regular` 是可读性优先档,会主动加底衬、天生偏实)。
+    系统设置 → 外观 → Liquid Glass 的「清透 / 着色」会整体调节系统玻璃透明度,同样作用于这里
+  - 已知上限:面板自身已是一层系统玻璃,内容再叠一层玻璃 —— 两层各自提亮一次,这是「看着像毛玻璃」的主因,
+    也是 `MenuBarExtra` 下透明度的天花板。要更透只能去掉其中一层(内容直接坐在面板玻璃上,不再自建玻璃面)
   - 连接状态 + 实时输出速度 X/s + 活跃流数(WS `stats.throughput`,2Hz)
-  - 九宫格统计磁贴:请求/错误/Token·今日、缓存命中、平均耗时、透传占比、累计 Token、峰值 Token、连续天数(悬停查看口径)
+  - 九宫格统计:请求/错误/Token·今日、缓存命中、平均耗时、透传占比、累计 Token、峰值 Token、连续天数。同一张面内以发丝线分格(而非九个独立玻璃磁贴),大数值的 万/亿 数量级降为次级字号(悬停查看口径)
+  - 花费卡:今日花费(+预计今日)、本月累计(+月度预算与超支时点)、本月预计(近 7 日均速/本周期线性 + 置信度),口径同 Web 仪表盘
+  - 渠道与余额卡:列出接入渠道(启用/停用状态色点、接口风格)与上游账户余额;DeepSeek 按官方接口查询,余额以**上游原币种**展示(如 ¥),其余渠道显示 `—`
   - Token 趋势图 + 范围切换:实时(分钟桶)/ 24h / 7天 / 30天(Swift Charts)
   - 模型 TOP · 今日(条形排行)
   - 调用方 TOP · 30 天(`stats/by-key`,同 Web 口径)
-  - 实时请求流:`request.started` 插入"生成中"行,`request.completed` 按 `req_id` 原位替换;错误行红色高亮,悬停查看 UA/IP/错误详情
+  - 实时请求流:`request.started` 插入"生成中"行,`request.completed` 按 `req_id` 原位替换;三行富行常驻展示协议/转发模式/模型/状态码/时间、渠道·调用方·客户端(UA 短名)、入出 Token·缓存命中·输出速度·耗时·花费,错误行红色高亮,悬停查看会话/请求头/IP/计价口径等完整明细
   - 底部操作:打开 Web 控制台 / 设置 / 退出
-- **设置**:Hub 服务地址(默认 `http://127.0.0.1:9192`,支持远程部署)、菜单栏显示模式、登录自启(SMAppService)
+- **设置**:Hub 服务地址(默认 `http://127.0.0.1:9192`,支持远程部署)、菜单栏显示指标(含今日花费)、登录自启(SMAppService)
 - 连接保活:文本心跳 25s、65s 静默判死、指数退避自动重连(1s→30s),重连后自动全量补拉
 
 ## 环境要求
@@ -32,7 +42,7 @@ make run                  # 生成工程 → 编译 → 启动
 make test                 # 单元测试
 make gen                  # 仅重新生成 .xcodeproj(修改 project.yml 后)
 make icon                 # 重新生成 AppIcon(1024 master + 多尺寸派生)
-make package              # 制作 DMG 安装包(Release 构建,输出 XTokenHubMenuBar-1.0.0.dmg)
+make package              # 制作 DMG 安装包(Release 构建,输出 XTokenHubMenuBar-1.2.0.dmg)
 ```
 
 安装:打开 DMG,把 XTokenHubMenuBar.app 拖入 Applications 即可(应用为 ad-hoc 签名;拷入 /Applications 后才能正常注册「登录时自动启动」)。图标由 `Tools/make_icon.swift` 程序化绘制(蓝青渐变玻璃底 + 上升折线),改配色/形状后重跑 `make icon && make package`。
@@ -50,7 +60,11 @@ make package              # 制作 DMG 安装包(Release 构建,输出 XTokenHub
 | 模型 TOP | `GET /api/v1/stats/by-model?since=<当日零点>` |
 | 累计 Token | `GET /api/v1/stats/lifetime` |
 | 实时流首屏 | `GET /api/v1/logs?page=1&per_page=30` |
-| 实时推送 | `WS /api/v1/ws`(`request.started/completed`、`stats.updated`、`stats.throughput`、`channel.*`) |
+| 接入渠道 | `GET /api/v1/channels?page=1&per_page=200`(不消费 `api_key`) |
+| 渠道余额 | `GET /api/v1/channels/balances`(按 BaseURL 推断厂家,服务端 5 分钟 TTL) |
+| 花费预测 | `GET /api/v1/stats/cost/forecast?period=today\|month` |
+| 计费设置 | `GET /api/v1/settings/billing`(展示币种/汇率/月预算) |
+| 实时推送 | `WS /api/v1/ws`(`request.started/completed`、`stats.updated`、`stats.throughput`、`channel.balance_updated`、`channel.status_changed/probe_result`) |
 
 ## 代码结构
 
@@ -66,7 +80,7 @@ App/
 │       ├── HubStore.swift      # @Observable 主线程状态机(REST + WS 事件汇聚)
 │       └── AppSettings.swift   # UserDefaults 持久化设置
 ├── Views/                      # 玻璃面板、菜单栏标签、设置页、组件
-└── Utilities/                  # TokenFormatter / HubDate / HubURL
+└── Utilities/                  # TokenFormatter / MoneyFormatter / HubDate / HubURL
 Tests/                          # Swift Testing 单元测试(模型解码/格式化/URL 规范化)
 Tools/make_icon.swift           # 重新生成占位 AppIcon
 ```

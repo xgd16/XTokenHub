@@ -1,0 +1,52 @@
+[Unit]
+Description=XTokenHub LLM 网关与用量面板
+Documentation=https://github.com/xgd/XTokenHub
+# 价格表同步、余额查询都要出网；等网络就绪再启动，避免首次同步失败后要等一个同步周期。
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# 配置与数据库（configs/、data/）都按相对路径解析，工作目录必须指向部署根目录。
+WorkingDirectory=/home/user/code/XTokenHub
+ExecStart=/usr/local/bin/xtokenhub -config /home/user/code/XTokenHub/configs/config.yaml
+
+# 站点差异配置（出网代理、XT_HUB_* 覆盖项），见 deploy/xtokenhub.env.example。
+# 前缀 "-" 表示文件不存在时不报错。
+EnvironmentFile=-/etc/default/xtokenhub
+
+# 异常退出自动拉起；systemctl stop / restart 属正常退出，不触发重启。
+Restart=on-failure
+RestartSec=5s
+
+# 日志交给 journald，替代无限增长的 nohup.out：
+#   journalctl -u xtokenhub -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=xtokenhub
+
+# ---------- 安全加固 ----------
+# 应用只写 data/（SQLite 及其 WAL/SHM），配置只读，其余路径禁止写入。
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/user/code/XTokenHub/data
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+# 监听端口 >1024，无需任何 capability。
+CapabilityBoundingSet=
+AmbientCapabilities=
+# 出网 + DNS 解析所需（AF_NETLINK 供 Go 枚举网卡）。
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

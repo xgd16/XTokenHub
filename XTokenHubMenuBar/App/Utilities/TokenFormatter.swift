@@ -22,6 +22,29 @@ enum TokenFormatter {
         ms < 1_000 ? "\(ms)ms" : String(format: "%.2fs", Double(ms) / 1_000)
     }
 
+    /// 百分数(Web percent()):0.234 → "23.4%"。
+    static func percent(_ ratio: Double, digits: Int = 1) -> String {
+        guard ratio.isFinite else { return "0%" }
+        return String(format: "%.\(digits)f%%", ratio * 100)
+    }
+
+    /// 输出速度(Web tokenSpeed()):completion 数 / 耗时;任一侧无效(进行中)返回 —。
+    static func speed(completionTokens: Int64, durationMS: Int64) -> String {
+        guard completionTokens > 0, durationMS > 0 else { return "—" }
+        let perSec = Double(completionTokens) / Double(durationMS) * 1_000
+        return compact(Int64(perSec.rounded())) + " tok/s"
+    }
+
+    /// 拆出 `compact(_:)` 的中文数量级后缀(万/亿),便于统计磁贴把单位排成次级字号。
+    /// 无数量级(如 980)时 unit 为空串。
+    static func splitCompact(_ value: Int64) -> (number: String, unit: String) {
+        let text = compact(value)
+        guard let suffix = text.last, suffix == "万" || suffix == "亿" else {
+            return (text, "")
+        }
+        return (String(text.dropLast()), String(suffix))
+    }
+
     /// 对应 JS `parseFloat(x.toFixed(2))`:保留最多 2 位小数并去掉尾随零。
     private static func trimmed(_ x: Double) -> String {
         var s = String(format: "%.2f", x)

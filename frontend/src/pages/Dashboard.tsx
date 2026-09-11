@@ -23,10 +23,12 @@ import {
   type TrendPoint,
 } from '../api/stats'
 import { logApi, type RequestLog } from '../api/log'
+import { costApi, type CostForecast } from '../api/pricing'
 import { WS_EVENTS, useWsEvent, useWsReconnected } from '../api/ws'
 import { agentShort, compactCN, compactNumber, duration, durationLong, fullTime, hitRateColor, percent, protocolShort, timeOf, tokenSpeed } from '../utils/format'
 import { mergeLiveEvents, mergeSessionViews, toBucketSeries, toDonut, toHeatmap, toModelRank, toModelTrend, toStatCards, toTrendSeries, type HeatMode, type LivePhase, type ModelRank, type SessionGroup } from '../utils/transform'
 import { useIsMobile } from '../utils/useIsMobile'
+import { useMoneyFormat } from '../utils/useMoneyFormat'
 import { useChartPalette } from '../theme'
 
 const { Text } = Typography
@@ -35,6 +37,11 @@ const { Text } = Typography
 const pct = (n: number) => `${Math.round(n * 10) / 10}%`
 /** 连续天数格式化。 */
 const streak = (n: number) => `${n} 天`
+
+/** 预测基准的中文说明。 */
+const basisLabel = (basis: string) => (basis === 'run_rate' ? '按近 7 日均值' : '按当前速率')
+/** 预测置信度的中文说明。 */
+const confidenceLabel = (c: string) => (c === 'high' ? '高' : c === 'medium' ? '中' : '低')
 
 /**
  * 实时流容量：仅用于「尚未落库」的进行中行缓冲（后端已提供全量会话合计，
@@ -122,6 +129,7 @@ const ThroughputTicker = memo(function ThroughputTicker() {
 
 /** 通用 TOP 条形列表（模型 TOP / 调用方 TOP 共用）。 */
 const UsageBars = memo(function UsageBars({ rows }: { rows: ModelRank[] }) {
+  const { format: money } = useMoneyFormat()
   const max = Math.max(...rows.map((x) => x.requests), 1)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -130,7 +138,7 @@ const UsageBars = memo(function UsageBars({ rows }: { rows: ModelRank[] }) {
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
             <span className="mono" style={{ fontSize: 12, color: 'var(--text-primary)' }}>{m.name}</span>
             <span className="mono" style={{ fontSize: 12, color: 'var(--text-faint)' }}>
-              {compactCN(m.requests)} 次 · {compactCN(m.tokens)} tok
+              {compactCN(m.requests)} 次 · {compactCN(m.tokens)} tok · {money(m.costUSD)}
             </span>
           </div>
           <div style={{ height: 4, borderRadius: 2, background: 'var(--track-bg)', overflow: 'hidden' }}>
@@ -643,6 +651,10 @@ export default function Dashboard() {
   // 调用方 TOP（近 30 天，按密钥聚合）
   const [byKey, setByKey] = useState<GroupStat[]>([])
 
+  // 花费：今日与本月已花费/期末预测。今日随快速刷新走，本月随慢速刷新走。
+  const [costToday, setCostToday] = useState<CostForecast | null>(null)
+  const [costMonth, setCostMonth] = useState<CostForecast | null>(null)
+
   // 趋势图范围（默认实时）；refresh 经 ref 读取当前值，避免重建回调断开 WS 订阅
   const [range, setRange] = useState<TrendRangeKey>('live')
   const rangeRef = useRef(range)
@@ -656,14 +668,16 @@ export default function Dashboard() {
   // 快速刷新：当天汇总 + 请求趋势 + 当天模型 TOP
   const refresh = useCallback(async () => {
     const r = TREND_RANGES.find((x) => x.key === rangeRef.current) ?? TREND_RANGES[2]
-    const [s, t, m] = await Promise.all([
+    const [s, t, m, ct] = await Promise.all([
       statsApi.summary(24, todaySince()),
       statsApi.trend(r.hours, r.bucket),
       statsApi.byModel(24, todaySince()),
+      costApi.forecast('today'),
     ])
     setSummary(s)
     setTrend(t)
     setByModel(m)
+    setCostToday(ct)
   }, [])
 
   // 仅刷新趋势：实时档借吞吐推送（恒定 2Hz）推进空桶，无需连带重拉汇总/模型 TOP。
@@ -682,16 +696,18 @@ export default function Dashboard() {
   // 慢速刷新：全历史累计 + 热力图（26 周）+ 模型趋势/用量 + 调用方 TOP（按日聚合，无需高频）
   const refreshSlow = useCallback(async () => {
     const days = rangeDaysRef.current
-    const [lt, hp, mt, bk] = await Promise.all([
+    const [lt, hp, mt, bk, cm] = await Promise.all([
       lifetimeApi.get(),
       statsApi.trendByDay(190),
       lifetimeApi.trendByModel(days),
       statsApi.byKey(720),
+      costApi.forecast('month'),
     ])
     setLifetime(lt)
     setHeatPoints(hp)
     setModelTrend(mt)
     setByKey(bk)
+    setCostMonth(cm)
   }, [])
 
   // 展开会话的明细：按组键拉最近 LIVE_DETAIL_MAX 条（后端聚合行不含全量行）。
@@ -920,6 +936,24 @@ export default function Dashboard() {
   )
   const ranked = useMemo(() => toModelRank(byModel, 6), [byModel])
   const keyRanked = useMemo(() => toModelRank(byKey, 6), [byKey])
+  const { format: money } = useMoneyFormat()
+
+  // 预测卡片副标题：能预测时给出基准与置信度，样本不足时说明原因（不让用户看到无解释的空值）
+  const todayCostSub = costToday
+    ? costToday.projected_usd != null
+      ? `预计今日 ${money(costToday.projected_usd)}`
+      : costToday.reason || '样本不足'
+    : undefined
+  const monthCostSub = costMonth
+    ? costMonth.projected_usd != null
+      ? `${basisLabel(costMonth.basis)} · 置信度${confidenceLabel(costMonth.confidence)}`
+      : costMonth.reason || '样本不足'
+    : undefined
+  const budgetSub =
+    costMonth && costMonth.budget_usd > 0
+      ? `月度预算 ${money(costMonth.budget_usd)}` +
+        (costMonth.projected_exceeded_date ? ` · 预计 ${costMonth.projected_exceeded_date} 触及` : '')
+      : '未设月度预算 · 可在设置页配置'
 
   const heat = useMemo(() => toHeatmap(heatPoints, heatMode, new Date(), 26), [heatPoints, heatMode])
   const mt = useMemo(() => toModelTrend(modelTrend, rangeDays), [modelTrend, rangeDays])
@@ -964,6 +998,18 @@ export default function Dashboard() {
         </Col>
         <Col xs={12} md={8} lg={4}>
           <StatCard label="最长连续天数" value={lifetime ? lifetime.max_streak : null} format={streak} sub="历史最长连击" />
+        </Col>
+      </Row>
+
+      <Row gutter={[16, 16]} align="stretch">
+        <Col xs={24} md={8}>
+          <StatCard label="今日花费" value={costToday ? costToday.spent_usd : null} format={money} sub={todayCostSub} tick />
+        </Col>
+        <Col xs={24} md={8}>
+          <StatCard label="本月累计花费" value={costMonth ? costMonth.spent_usd : null} format={money} sub={budgetSub} />
+        </Col>
+        <Col xs={24} md={8}>
+          <StatCard label="本月预计花费" value={costMonth ? costMonth.projected_usd : null} format={money} sub={monthCostSub} />
         </Col>
       </Row>
 
@@ -1054,8 +1100,13 @@ export default function Dashboard() {
         <Col xs={24} lg={14}>
           <Card
             className="panel"
-            style={{ height: '100%' }}
-            styles={{ body: { padding: '14px 16px 12px', display: 'flex', flexDirection: 'column' }, header: { borderBottom: '1px solid var(--border-faint)' } }}
+            // 卡片自身作 flex 列容器，body 才能撑满被同行卡片拉高后的剩余高度；
+            // 否则 body 按内容高度停在 120px，热力图永远长不大，卡片下半截留白。
+            style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
+            styles={{
+              body: { padding: '14px 16px 12px', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 },
+              header: { borderBottom: '1px solid var(--border-faint)', flexShrink: 0 },
+            }}
             title={<span style={panelHeaderStyle}>Token 活动</span>}
             extra={
               <Segmented

@@ -82,6 +82,8 @@ export interface ModelRank {
   name: string
   requests: number
   tokens: number
+  /** 该维度费用合计（USD）。 */
+  costUSD: number
   cachePercent: number
 }
 
@@ -91,6 +93,7 @@ export function toModelRank(rows: GroupStat[] | null | undefined, top = 8): Mode
     name: g.name || 'unknown',
     requests: g.requests,
     tokens: g.total_tokens,
+    costUSD: g.cost_usd || 0,
     cachePercent: Math.round((g.cache_rate || 0) * 1000) / 10,
   }))
 }
