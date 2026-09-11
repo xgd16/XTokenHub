@@ -4,11 +4,8 @@
 <dict>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
-	<!-- 作为客户端访问 XTokenHub REST/WebSocket -->
+	<!-- Widget Extension 需要网络访问权限以在主 App 未运行时获取数据 -->
 	<key>com.apple.security.network.client</key>
-	<true/>
-	<!-- 在 127.0.0.1 上暴露只读端点,把当前数据交给桌面小组件 -->
-	<key>com.apple.security.network.server</key>
 	<true/>
 </dict>
 </plist>

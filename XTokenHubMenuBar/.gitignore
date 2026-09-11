@@ -1,6 +1,8 @@
 # XcodeGen 生成产物
 *.xcodeproj
 xcuserdata/
+# 由 project.yml 的 info: 段生成(改配置后 make gen 会重写)
+Widget/Info.plist
 
 # 构建输出与安装包
 .build/

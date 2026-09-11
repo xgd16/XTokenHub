@@ -26,6 +26,7 @@ XTokenHub 的 macOS 菜单栏伴侣应用 —— 类 iStat Menus 的 token 用�
   - 实时请求流:`request.started` 插入"生成中"行,`request.completed` 按 `req_id` 原位替换;三行富行常驻展示协议/转发模式/模型/状态码/时间、渠道·调用方·客户端(UA 短名)、入出 Token·缓存命中·输出速度·耗时·花费,错误行红色高亮,悬停查看会话/请求头/IP/计价口径等完整明细
   - 底部操作:打开 Web 控制台 / 设置 / 退出
 - **设置**:Hub 服务地址(默认 `http://127.0.0.1:9192`,支持远程部署)、菜单栏显示指标(含今日花费)、登录自启(SMAppService)
+- **桌面小组件**:Small / Medium / Large 三种尺寸(170×170、358×170、358×358),分别做「今日速览」「今日统计」「完整仪表盘」(统计磁贴 + 24h 趋势 + 模型 TOP + 渠道余额);口径与面板同一套(计费币种/汇率、万/亿 单位),主 App 数据变化时主动触发刷新
 - 连接保活:文本心跳 25s、65s 静默判死、指数退避自动重连(1s→30s),重连后自动全量补拉
 
 ## 环境要求
@@ -51,6 +52,18 @@ make package              # 制作 DMG 安装包(Release 构建,输出 XTokenHub
 
 > 「登录时自动启动」需要先将 `XTokenHubMenuBar.app` 拷入 `/Applications`(系统限制)。
 
+## 桌面小组件
+
+三种尺寸的小组件由独立的 Widget Extension 提供,随主 App 一起打包(`XTokenHubMenuBar.app/Contents/PlugIns/XTokenHubWidget.appex`)。
+
+添加方式:把 App 拷入 `/Applications` 并启动一次,然后在桌面右键 →「编辑小组件」→ 搜索 XTokenHub,按尺寸拖出即可。小组件只有一个设置项「备选服务地址」,留空表示跟随主 App 当前的数据来源。
+
+数据来自主 App 在 `127.0.0.1:9193` 暴露的只读端点 `/snapshot`(只监听回环地址、只响应 GET;LAN 地址访问不通):
+
+- **主 App 未运行时**小组件拿不到这份数据,此时可在小组件设置里填服务地址(如 `http://192.168.1.110:9192`)直连,否则退回上一次的本地缓存
+- 没有用 App Groups 共享数据:那是受限 entitlement,需要 provisioning profile;本项目 ad-hoc 签名(无开发者账号),加上会直接构建失败。改走回环 HTTP 后,小组件只需要网络权限,主 App 多一条 `network.server`
+- 刷新由主 App 在每次数据落地后调用 `WidgetCenter.reloadTimelines` 主动触发;另有 15 分钟的时间线兜底(系统对小组件刷新有节流)
+
 ## 数据来源(与 XTokenHub 对应)
 
 | 用途 | 端点 |
@@ -75,12 +88,15 @@ App/
 │   ├── Models/                 # 与 Go 端 json 标签对齐的 Codable + WS 事件解码
 │   ├── Networking/
 │   │   ├── APIClient.swift     # async/await REST 客户端(信封解包)
-│   │   └── HubSocket.swift     # WebSocket:心跳/判死/退避重连
+│   │   ├── HubSocket.swift     # WebSocket:心跳/判死/退避重连
+│   │   └── WidgetBridgeServer.swift  # 127.0.0.1:9193 只读 /snapshot,给小组件供数
 │   └── Store/
 │       ├── HubStore.swift      # @Observable 主线程状态机(REST + WS 事件汇聚)
 │       └── AppSettings.swift   # UserDefaults 持久化设置
 ├── Views/                      # 玻璃面板、菜单栏标签、设置页、组件
 └── Utilities/                  # TokenFormatter / MoneyFormatter / HubDate / HubURL
+Shared/                         # App 与 Widget 共用:桥接载荷契约 + 取数(桥 → 直连 → 缓存)
+Widget/                         # Widget Extension:入口 / 配置 Intent / Provider / 三种尺寸视图
 Tests/                          # Swift Testing 单元测试(模型解码/格式化/URL 规范化)
 Tools/make_icon.swift           # 重新生成占位 AppIcon
 ```

@@ -9,10 +9,75 @@ settings:
     SWIFT_VERSION: "6.0"
     MARKETING_VERSION: "1.2.0"
     CURRENT_PROJECT_VERSION: "1"
-    CODE_SIGN_STYLE: Manual
     # 本地开发用 ad-hoc 签名(无开发者账号也能跑,App Sandbox entitlement 合法)
+    CODE_SIGN_STYLE: Manual
     CODE_SIGN_IDENTITY: "-"
     DEVELOPMENT_TEAM: ""
+    PROVISIONING_PROFILE_SPECIFIER: ""
+    ENABLE_HARDENED_RUNTIME: NO
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    SDKROOT: macosx
+    SWIFT_STRICT_CONCURRENCY: complete
+    # 编译器告警(Xcode 推荐设置,与构建配置无关)
+    CLANG_ANALYZER_NONNULL: YES
+    CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION: YES_AGGRESSIVE
+    CLANG_CXX_LANGUAGE_STANDARD: "gnu++20"
+    CLANG_ENABLE_MODULES: YES
+    CLANG_ENABLE_OBJC_ARC: YES
+    CLANG_ENABLE_OBJC_WEAK: YES
+    CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING: YES
+    CLANG_WARN_BOOL_CONVERSION: YES
+    CLANG_WARN_COMMA: YES
+    CLANG_WARN_CONSTANT_CONVERSION: YES
+    CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS: YES
+    CLANG_WARN_DIRECT_OBJC_ISA_USAGE: YES_ERROR
+    CLANG_WARN_DOCUMENTATION_COMMENTS: YES
+    CLANG_WARN_EMPTY_BODY: YES
+    CLANG_WARN_ENUM_CONVERSION: YES
+    CLANG_WARN_INFINITE_RECURSION: YES
+    CLANG_WARN_INT_CONVERSION: YES
+    CLANG_WARN_NON_LITERAL_NULL_CONVERSION: YES
+    CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF: YES
+    CLANG_WARN_OBJC_LITERAL_CONVERSION: YES
+    CLANG_WARN_OBJC_ROOT_CLASS: YES_ERROR
+    CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER: YES
+    CLANG_WARN_RANGE_LOOP_ANALYSIS: YES
+    CLANG_WARN_STRICT_PROTOTYPES: YES
+    CLANG_WARN_SUSPICIOUS_MOVE: YES
+    CLANG_WARN_UNGUARDED_AVAILABILITY: YES_AGGRESSIVE
+    CLANG_WARN_UNREACHABLE_CODE: YES
+    CLANG_WARN__DUPLICATE_METHOD_MATCH: YES
+    ENABLE_STRICT_OBJC_MSGSEND: YES
+    GCC_C_LANGUAGE_STANDARD: gnu17
+    GCC_NO_COMMON_BLOCKS: YES
+    GCC_WARN_64_TO_32_BIT_CONVERSION: YES
+    GCC_WARN_ABOUT_RETURN_TYPE: YES_ERROR
+    GCC_WARN_UNDECLARED_SELECTOR: YES
+    GCC_WARN_UNINITIALIZED_AUTOS: YES_AGGRESSIVE
+    GCC_WARN_UNUSED_FUNCTION: YES
+    GCC_WARN_UNUSED_VARIABLE: YES
+  configs:
+    Debug:
+      ONLY_ACTIVE_ARCH: YES
+      DEBUG_INFORMATION_FORMAT: dwarf
+      ENABLE_TESTABILITY: YES
+      GCC_DYNAMIC_NO_PIC: NO
+      GCC_OPTIMIZATION_LEVEL: "0"
+      GCC_PREPROCESSOR_DEFINITIONS:
+        - "DEBUG=1"
+        - "$(inherited)"
+      MTL_ENABLE_DEBUG_INFO: INCLUDE_SOURCE
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "DEBUG $(inherited)"
+      SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+    Release:
+      ONLY_ACTIVE_ARCH: NO
+      DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+      ENABLE_NS_ASSERTIONS: NO
+      ENABLE_TESTABILITY: NO
+      GCC_OPTIMIZATION_LEVEL: s
+      MTL_ENABLE_DEBUG_INFO: NO
+      SWIFT_COMPILATION_MODE: wholemodule
+      SWIFT_OPTIMIZATION_LEVEL: "-O"
 targets:
   XTokenHubMenuBar:
     type: application
@@ -22,15 +87,21 @@ targets:
         excludes:
           - "Info.plist"
           - "*.entitlements"
+      - path: Shared
+    dependencies:
+      # 小组件必须嵌入主 App 包(Contents/PlugIns/),系统才会发现并列出
+      - target: XTokenHubWidget
+        embed: true
+        codeSign: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.xtokenhub.menubar
         PRODUCT_NAME: XTokenHubMenuBar
         INFOPLIST_FILE: App/Info.plist
         CODE_SIGN_ENTITLEMENTS: App/XTokenHubMenuBar.entitlements
-        ENABLE_PREVIEWS: true
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        ENABLE_PREVIEWS: YES
   XTokenHubMenuBarTests:
     type: bundle.unit-test
     platform: macOS
@@ -41,17 +112,56 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.xtokenhub.menubar.tests
+        GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/XTokenHubMenuBar.app/Contents/MacOS/XTokenHubMenuBar"
         BUNDLE_LOADER: "$(TEST_HOST)"
-        GENERATE_INFOPLIST_FILE: true
+  XTokenHubWidget:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: Widget
+        excludes:
+          - "*.entitlements"
+      - path: Shared
+      - path: App/Core/Models/HubModels.swift
+      - path: App/Core/Networking/APIClient.swift
+      - path: App/Utilities/TokenFormatter.swift
+      - path: App/Utilities/MoneyFormatter.swift
+      - path: App/Utilities/HubURL.swift
+      - path: App/Utilities/HubDate.swift
+    info:
+      path: Widget/Info.plist
+      properties:
+        CFBundleDisplayName: XTokenHub
+        CFBundleName: XTokenHubWidget
+        # 必须与宿主 App 版本一致,否则系统拒绝加载扩展
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    dependencies:
+      - framework: WidgetKit.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.xtokenhub.menubar.widget
+        PRODUCT_NAME: XTokenHubWidget
+        CODE_SIGN_ENTITLEMENTS: Widget/XTokenHubWidget.entitlements
+        SKIP_INSTALL: YES
 schemes:
   XTokenHubMenuBar:
     build:
       targets:
         XTokenHubMenuBar: all
+        XTokenHubWidget: all
     run:
       config: Debug
     test:
       config: Debug
       targets:
         - XTokenHubMenuBarTests
+  XTokenHubWidget:
+    build:
+      targets:
+        XTokenHubWidget: all
+    run:
+      config: Debug

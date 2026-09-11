@@ -25,7 +25,7 @@ struct PageData<T: Decodable & Sendable>: Decodable, Sendable {
 // MARK: - 统计接口模型(与 internal/repository/repository.go 的 json 标签对齐)
 
 /// GET /api/v1/stats/summary — 时间窗内汇总。
-struct Summary: Decodable, Equatable, Sendable {
+struct Summary: Codable, Equatable, Sendable {
     var totalRequests: Int64
     var successRequests: Int64
     var errorRequests: Int64
@@ -54,7 +54,7 @@ struct Summary: Decodable, Equatable, Sendable {
 }
 
 /// GET /api/v1/stats/trend — 趋势点;分桶查询时 ts 为桶起点 Unix 秒,按日查询只有 date。
-struct TrendPoint: Decodable, Equatable, Sendable, Identifiable {
+struct TrendPoint: Codable, Equatable, Sendable, Identifiable {
     var date: String
     var ts: Int64
     var requests: Int64
@@ -65,6 +65,14 @@ struct TrendPoint: Decodable, Equatable, Sendable, Identifiable {
         case date, ts, requests
         case totalTokens = "total_tokens"
         case errorRequests = "error_requests"
+    }
+
+    init(date: String, ts: Int64, requests: Int64, totalTokens: Int64, errorRequests: Int64) {
+        self.date = date
+        self.ts = ts
+        self.requests = requests
+        self.totalTokens = totalTokens
+        self.errorRequests = errorRequests
     }
 
     init(from decoder: Decoder) throws {
@@ -86,7 +94,7 @@ struct TrendPoint: Decodable, Equatable, Sendable, Identifiable {
 }
 
 /// GET /api/v1/stats/by-model 等聚合端点共用。
-struct GroupStat: Decodable, Equatable, Sendable, Identifiable {
+struct GroupStat: Codable, Equatable, Sendable, Identifiable {
     var name: String
     var requests: Int64
     var totalTokens: Int64
@@ -228,7 +236,7 @@ struct Channel: Decodable, Equatable, Identifiable, Sendable {
 }
 
 /// 上游账户余额快照(GET /api/v1/channels/balances 内嵌)。
-struct BalanceInfo: Decodable, Equatable, Sendable {
+struct BalanceInfo: Codable, Equatable, Sendable {
     var provider: String
     var isAvailable: Bool
     var currency: String
@@ -248,7 +256,7 @@ struct BalanceInfo: Decodable, Equatable, Sendable {
 }
 
 /// 单渠道余额查询结果;supported == false 表示该 BaseURL 无对应余额接口。
-struct ChannelBalance: Decodable, Equatable, Identifiable, Sendable {
+struct ChannelBalance: Codable, Equatable, Identifiable, Sendable {
     var channelID: Int64
     var channelName: String
     var provider: String
@@ -276,7 +284,7 @@ struct ChannelBalanceList: Decodable, Equatable, Sendable {
 // MARK: - 花费(与 internal/service/forecast.go 对齐)
 
 /// GET /api/v1/stats/cost/forecast 花费预测。
-struct CostForecast: Decodable, Equatable, Sendable {
+struct CostForecast: Codable, Equatable, Sendable {
     /// today | month。
     var period: String
     var spentUSD: Double
@@ -323,7 +331,7 @@ struct BillingSettings: Decodable, Equatable, Sendable {
 // MARK: - WS 载荷
 
 /// stats.throughput 事件载荷(2Hz 推送)。
-struct ThroughputPayload: Decodable, Equatable, Sendable {
+struct ThroughputPayload: Codable, Equatable, Sendable {
     var tokensPerSec: Double
     var activeStreams: Int
 

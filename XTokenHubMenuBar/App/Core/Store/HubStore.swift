@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import WidgetKit
 
 /// 面板核心状态:REST 拉取 + WS 实时事件,全部在主线程。
 @MainActor
@@ -71,6 +72,8 @@ final class HubStore {
     private var statsRefreshTask: Task<Void, Never>?
     private var channelsRefreshTask: Task<Void, Never>?
     private var periodicTask: Task<Void, Never>?
+    /// 把当前数据交给 Widget 的本机回环端点。
+    private let widgetBridge = WidgetBridgeServer()
     private let maxLiveRows = 50
 
     func start(with settings: AppSettings) {
@@ -78,6 +81,7 @@ final class HubStore {
         started = true
         self.settings = settings
         settings.onChange = { [weak self] in self?.scheduleRebuild() }
+        widgetBridge.start()
         rebuildIfNeeded()
         periodicTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -135,6 +139,9 @@ final class HubStore {
         costToday = nil
         costMonth = nil
         billing = nil
+
+        // 数据来源切换：让 Widget 重新取数
+        WidgetDataProvider.reloadWidgets()
 
         socket?.disconnect()
         let sock = HubSocket(url: HubURL.wsBase(base))
@@ -246,6 +253,9 @@ final class HubStore {
         // 花费是可选增强:接口缺失(旧后端)时不能拖垮核心汇总
         costToday = try? await api.costForecast(period: "today")
         await fetchTrend()
+
+        // 同步数据到 Widget
+        syncWidgetData()
     }
 
     /// 按当前选择的范围拉取趋势。
@@ -302,6 +312,8 @@ final class HubStore {
 
     private func refreshAll() async {
         guard let api else { return }
+        // 计费设置先行：花费的展示币种/汇率依赖它，也让随后的 Widget 同步带上正确币种
+        await fetchBilling()
         await refreshQuick()
         do {
             async let lifetimeTask = api.lifetime()
@@ -314,8 +326,33 @@ final class HubStore {
         }
         await fetchCallers()
         await fetchChannels()
-        await fetchBilling()
         await fetchCostMonth()
         await fetchBalances()
+        // 慢速数据（余额等）齐了再同步一次，避免 Widget 拿到残缺载荷
+        syncWidgetData()
+    }
+
+    // MARK: - Widget 刷新
+
+    /// 把最新数据交给桥接服务，并通知系统重建 Widget 时间线。
+    ///
+    /// 每次快速刷新后调用。Widget 会先来这里取数（能拿到当前选中的数据来源），
+    /// 拿不到时才退回到自己请求 XTokenHub 接口。
+    private func syncWidgetData() {
+        guard let settings else { return }
+
+        widgetBridge.update(WidgetBridgePayload(
+            baseURL: settings.selectedSource.urlString,
+            sourceName: settings.selectedSource.name,
+            summary: summary,
+            costToday: costToday,
+            modelTop: modelTop,
+            channelBalances: Array(balances.values),
+            billingCurrency: billing?.displayCurrency ?? "USD",
+            billingRate: billing?.usdRate ?? 0,
+            generatedAt: Date()
+        ))
+
+        WidgetDataProvider.reloadWidgets()
     }
 }
