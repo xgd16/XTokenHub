@@ -81,13 +81,23 @@ enum WidgetSnapshotFactory {
     )
 
     /// 24 小时示例趋势（占位图用）。
-    static let sampleTrend: [TrendPoint] = (0..<24).map { hour in
-        TrendPoint(
-            date: "",
-            ts: Int64(Date().timeIntervalSince1970) - Int64((23 - hour) * 3600),
-            requests: 40,
-            totalTokens: hour >= 9 && hour <= 18 ? 4_200 : 1_600,
-            errorRequests: 0
-        )
-    }
+    /// 逐项拆开赋值：写成单句 `(0..<24).map { TrendPoint(...) }` 会让 Xcode 26 的类型检查器
+    /// 判定「无法在合理时间内完成」（CI 实测），显式标注每步类型即可。
+    static let sampleTrend: [TrendPoint] = {
+        let now = Int64(Date().timeIntervalSince1970)
+        var points: [TrendPoint] = []
+        points.reserveCapacity(24)
+        for hour in 0..<24 {
+            let ts: Int64 = now - Int64(23 - hour) * 3600
+            let tokens: Int64 = (9...18).contains(hour) ? 4_200 : 1_600
+            points.append(TrendPoint(
+                date: "",
+                ts: ts,
+                requests: 40,
+                totalTokens: tokens,
+                errorRequests: 0
+            ))
+        }
+        return points
+    }()
 }
