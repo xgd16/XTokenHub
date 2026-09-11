@@ -305,16 +305,125 @@ body::before {
   overflow: hidden;
 }
 
+/* 实时请求流：展开行动画（滑入渐显） */
+@keyframes expand-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.ant-table-expanded-row > td {
+  animation: expand-slide-in 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* 展开内容加载骨架脉冲 */
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.18;
+  }
+}
+.skeleton-bar {
+  height: 14px;
+  border-radius: 4px;
+  background: var(--track-bg);
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+.skeleton-bar.short {
+  width: 40%;
+}
+.skeleton-bar.medium {
+  width: 65%;
+}
+.skeleton-bar.long {
+  width: 85%;
+}
+
+/* 加载完成后内容淡入 */
+@keyframes content-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.live-detail-loaded {
+  animation: content-fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* 图表/卡片加载骨架 */
+.skeleton-chart-wave {
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+.skeleton-bar-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--track-bg);
+  overflow: hidden;
+}
+.skeleton-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--track-bg);
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+.skeleton-heatmap-cell {
+  border-radius: 2px;
+  background: var(--track-bg);
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+.skeleton-donut-ring {
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+.skeleton-stat-number {
+  height: 30px;
+  width: 60%;
+  border-radius: 6px;
+  background: var(--track-bg);
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+.skeleton-stat-sub {
+  height: 12px;
+  width: 45%;
+  border-radius: 4px;
+  background: var(--track-bg);
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+  margin-top: 4px;
+}
+
 /* 减弱动态效果：用户系统开启「减少动态」时关闭装饰性/位移动画 */
 @media (prefers-reduced-motion: reduce) {
   .bg-aurora .aurora-blob,
   .row-live,
   .tick,
   .live-dot,
-  .live-dot.warn {
+  .live-dot.warn,
+  .skeleton-bar,
+  .skeleton-chart-wave,
+  .skeleton-bar-fill,
+  .skeleton-heatmap-cell,
+  .skeleton-donut-ring,
+  .skeleton-stat-number,
+  .skeleton-stat-sub {
     animation: none;
   }
   .panel {
     transition: none;
+  }
+  .ant-table-expanded-row > td {
+    animation: none;
+  }
+  .live-detail-loaded {
+    animation: none;
   }
 }

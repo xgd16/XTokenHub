@@ -151,3 +151,50 @@ func TestLiveSessionsStandaloneRows(t *testing.T) {
 		t.Errorf("错误合计 = %d, want 2", errs)
 	}
 }
+
+// 散行成组时要带回整行（含 request_headers）：聚合查询刻意不读该肥列以省时间，
+// 这些行必须靠末尾的按 id 补查填回，否则前端「查看头」会拿到空内容。
+func TestLiveSessionsStandaloneKeepsFullRow(t *testing.T) {
+	db := NewTestDB(t)
+	repo := repository.NewRequestLogRepository(db)
+	ctx := context.Background()
+	now := time.Now()
+
+	const headers = `{"x-session-id":["abc"],"user-agent":["ZCode/1.0"]}`
+	seedLogs(t, repo, []model.RequestLog{
+		// 散行：需要整行（含请求头）
+		{
+			Model: "m", TotalTokens: 10, CreatedAt: now.Add(-2 * time.Minute),
+			RequestHeaders: headers, ClientIP: "10.0.0.1", UpstreamStatus: 200,
+		},
+		// 会话行：聚合用，不需要请求头
+		{
+			SessionID: "s1", Model: "m", TotalTokens: 20,
+			CreatedAt: now.Add(-time.Minute), RequestHeaders: `{"big":["ignored"]}`,
+		},
+	})
+
+	got, err := repo.LiveSessions(ctx, repository.LiveSessionsInput{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stand *repository.LiveSession
+	for i := range got {
+		if got[i].SessionID == "" {
+			stand = &got[i]
+		}
+	}
+	if stand == nil {
+		t.Fatal("未找到散行组")
+	}
+	if stand.LastRequest == nil {
+		t.Fatal("散行组应带回 LastRequest")
+	}
+	if stand.LastRequest.RequestHeaders != headers {
+		t.Errorf("散行 RequestHeaders = %q, want %q（聚合查询不读该列，必须按 id 补回）",
+			stand.LastRequest.RequestHeaders, headers)
+	}
+	if stand.LastRequest.ClientIP != "10.0.0.1" || stand.LastRequest.UpstreamStatus != 200 {
+		t.Errorf("散行整行字段丢失: ip=%q status=%d", stand.LastRequest.ClientIP, stand.LastRequest.UpstreamStatus)
+	}
+}

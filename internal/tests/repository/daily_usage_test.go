@@ -64,3 +64,91 @@ func TestDailyUsageAndTrendByDayModel(t *testing.T) {
 		t.Errorf("缺少聚合点: %v", want)
 	}
 }
+
+// 本地日分桶的边界：跨零点前后必须落到各自那一天，日期字符串是本地日期。
+// 这里直接盯住 dayBucketSQL 的语义——它替代了 DATE(created_at,'localtime')
+// （后者在纯 Go 驱动下慢 15~20 倍），桶号到日期的反向换算很容易整体差一天。
+func TestDayBucketLocalBoundary(t *testing.T) {
+	db := NewTestDB(t)
+	repo := repository.NewRequestLogRepository(db)
+	ctx := context.Background()
+
+	// 以「今天本地 00:30」为基准，前后各取一个靠近零点的时刻
+	midnight := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 0, 0, 0, 0, time.Local)
+	prevDayLate := midnight.Add(-30 * time.Minute) // 昨天 23:30 本地
+	todayEarly := midnight.Add(30 * time.Minute)   // 今天 00:30 本地
+
+	seedLogs(t, repo, []model.RequestLog{
+		{Model: "m1", Protocol: model.ProtocolChatCompletions, ForwardMode: model.ForwardNativePassthrough, PromptTokens: 1, CreatedAt: prevDayLate},
+		{Model: "m1", Protocol: model.ProtocolChatCompletions, ForwardMode: model.ForwardNativePassthrough, PromptTokens: 2, CreatedAt: todayEarly},
+	})
+
+	for _, tc := range []struct {
+		name   string
+		got    func() ([]string, error)
+		expect []string
+	}{
+		{
+			"TrendByDay",
+			func() ([]string, error) {
+				pts, err := repo.TrendByDay(ctx, prevDayLate.Add(-time.Hour))
+				out := make([]string, 0, len(pts))
+				for _, p := range pts {
+					out = append(out, p.Date)
+				}
+				return out, err
+			},
+			[]string{prevDayLate.Format("2006-01-02"), todayEarly.Format("2006-01-02")},
+		},
+		{
+			"CostByDay",
+			func() ([]string, error) {
+				rows, err := repo.CostByDay(ctx, prevDayLate.Add(-time.Hour))
+				out := make([]string, 0, len(rows))
+				for _, r := range rows {
+					out = append(out, r.Date)
+				}
+				return out, err
+			},
+			[]string{prevDayLate.Format("2006-01-02"), todayEarly.Format("2006-01-02")},
+		},
+		{
+			"DailyUsage",
+			func() ([]string, error) {
+				rows, err := repo.DailyUsage(ctx, prevDayLate.Add(-time.Hour))
+				out := make([]string, 0, len(rows))
+				for _, r := range rows {
+					out = append(out, r.Date)
+				}
+				return out, err
+			},
+			[]string{prevDayLate.Format("2006-01-02"), todayEarly.Format("2006-01-02")},
+		},
+		{
+			"TrendByDayModel",
+			func() ([]string, error) {
+				rows, err := repo.TrendByDayModel(ctx, prevDayLate.Add(-time.Hour))
+				out := make([]string, 0, len(rows))
+				for _, r := range rows {
+					out = append(out, r.Date)
+				}
+				return out, err
+			},
+			[]string{prevDayLate.Format("2006-01-02"), todayEarly.Format("2006-01-02")},
+		},
+	} {
+		got, err := tc.got()
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if len(got) != len(tc.expect) {
+			t.Errorf("%s 天数=%d, want %d (%v)", tc.name, len(got), len(tc.expect), got)
+			continue
+		}
+		for i := range tc.expect {
+			if got[i] != tc.expect[i] {
+				t.Errorf("%s 第 %d 天 = %s, want %s", tc.name, i, got[i], tc.expect[i])
+			}
+		}
+	}
+}

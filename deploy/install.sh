@@ -129,13 +129,26 @@ CONF
   say "检测到 mihomo：已添加启动顺序依赖"
 fi
 
-# ---------- 7. 启用并启动 ----------
+# ---------- 7. 限制日志大小（postmarketOS 默认无限制，6天可积累 1GB） ----------
+JOURNALD_DROPIN="/etc/systemd/journald.conf.d/size-limit.conf"
+if [ ! -f "$JOURNALD_DROPIN" ]; then
+  mkdir -p "$(dirname -- "$JOURNALD_DROPIN")"
+  cat > "$JOURNALD_DROPIN" <<'CONF'
+# 由 deploy/install.sh 生成：限制日志占用空间
+[Journal]
+SystemMaxUse=100M
+RuntimeMaxUse=50M
+CONF
+  say "已配置日志大小限制: SystemMaxUse=100M"
+fi
+
+# ---------- 8. 启用并启动 ----------
 say "重载 systemd 并设为开机自启"
 systemctl daemon-reload
 systemctl enable "$XT_UNIT" >/dev/null
 systemctl restart "$XT_UNIT"
 
-# ---------- 8. 校验 ----------
+# ---------- 9. 校验 ----------
 say "等待服务就绪"
 i=0
 while [ "$i" -lt 15 ]; do

@@ -8,6 +8,10 @@ import (
 	"github.com/spf13/viper"
 )
 
+// MaxOpenConnsLimit 数据库连接池上限：SQLite 写操作本身串行，连接过多只会增加
+// 内存占用与写锁竞争，16 已远超实际需要。
+const MaxOpenConnsLimit = 16
+
 // Config 全局配置。
 type Config struct {
 	Server    ServerConfig    `mapstructure:"server"`
@@ -33,6 +37,9 @@ type DatabaseConfig struct {
 	Path string `mapstructure:"path"`
 	// EnableLog 开启 GORM SQL 日志。
 	EnableLog bool `mapstructure:"enable_log"`
+	// MaxOpenConns 连接池上限。WAL 模式下读可并发，故 > 1 才能真正并行执行查询；
+	// 写仍由 SQLite 串行化，busy_timeout 负责写锁竞争的重试。
+	MaxOpenConns int `mapstructure:"max_open_conns"`
 }
 
 type LogConfig struct {
@@ -128,6 +135,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("database.driver", "sqlite")
 	v.SetDefault("database.path", "data/xtokenhub.db")
 	v.SetDefault("database.enable_log", false)
+	v.SetDefault("database.max_open_conns", 4)
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.format", "json")
 	v.SetDefault("ws.ping_interval", 30)
@@ -156,6 +164,9 @@ func (c *Config) validate() error {
 	}
 	if c.Database.Path == "" {
 		return fmt.Errorf("database.path 不能为空")
+	}
+	if c.Database.MaxOpenConns < 1 || c.Database.MaxOpenConns > MaxOpenConnsLimit {
+		return fmt.Errorf("database.max_open_conns 非法: %d（允许 1~%d）", c.Database.MaxOpenConns, MaxOpenConnsLimit)
 	}
 	if c.Retention.MaxDays < 1 {
 		return fmt.Errorf("retention.max_days 非法: %d", c.Retention.MaxDays)

@@ -25,6 +25,7 @@ interface Props {
   /** weekly 模式悬浮文案带「当周」。 */
   mode?: HeatMode
   ariaLabel?: string
+  loading?: boolean
 }
 
 interface Hover {
@@ -50,7 +51,7 @@ function layout(cell: number, cols: number, rows: number) {
 }
 
 /** GitHub 风格 Token 活动热力图：格子尺寸随容器宽高自适应（移动端过窄时横向可滚动），悬浮显示明细。 */
-export default function TokenHeatmap({ data, mode = 'daily', ariaLabel = 'Token 活动热力图' }: Props) {
+export default function TokenHeatmap({ data, mode = 'daily', ariaLabel = 'Token 活动热力图', loading = false }: Props) {
   const pal = useChartPalette()
   const [hover, setHover] = useState<Hover | null>(null)
   const boxRef = useRef<HTMLDivElement | null>(null)
@@ -91,6 +92,28 @@ export default function TokenHeatmap({ data, mode = 'daily', ariaLabel = 'Token 
   }, [data, box])
 
   if (data.columns.length === 0) {
+    if (loading) {
+      // 7 列 × 5 行骨架网格
+      const cell = 10
+      const gap = 2
+      const cols = 20
+      const rows = 7
+      const w = cols * (cell + gap) - gap
+      const h = rows * (cell + gap) - gap
+      return (
+        <div style={{ height: 160, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: `${gap}px`, width: w, height: h }}>
+            {Array.from({ length: cols * rows }, (_, i) => (
+              <span
+                key={i}
+                className="skeleton-heatmap-cell"
+                style={{ width: cell, height: cell, animationDelay: `${(i % cols) * 0.03}s` }}
+              />
+            ))}
+          </div>
+        </div>
+      )
+    }
     return (
       <div style={{ height: 160, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-faint)', fontSize: 12 }}>
         暂无数据

@@ -28,6 +28,9 @@ func TestLoadDefaultsWhenFileMissing(t *testing.T) {
 	if cfg.Database.Path != "data/xtokenhub.db" || cfg.Gateway.UpstreamTimeout != 300 {
 		t.Errorf("默认值错误: %+v / %+v", cfg.Database, cfg.Gateway)
 	}
+	if cfg.Database.MaxOpenConns != 4 {
+		t.Errorf("database.max_open_conns 默认应为 4，实际 %d", cfg.Database.MaxOpenConns)
+	}
 	if !cfg.Gateway.RequireKey {
 		t.Error("gateway.require_key 默认应为 true")
 	}
@@ -89,5 +92,42 @@ func TestValidateErrors(t *testing.T) {
 	}
 	if _, err := config.Load(filepath.Join(t.TempDir(), "nope.yaml")); err == nil {
 		t.Error("文件不存在应报错")
+	}
+}
+
+func TestMaxOpenConnsConfig(t *testing.T) {
+	// YAML 显式配置覆盖默认值
+	cfg, err := config.Load(writeTemp(t, "database:\n  max_open_conns: 8\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Database.MaxOpenConns != 8 {
+		t.Errorf("yaml 覆盖失败: %d", cfg.Database.MaxOpenConns)
+	}
+
+	// 环境变量覆盖
+	t.Setenv("XT_HUB_DATABASE__MAX_OPEN_CONNS", "2")
+	cfg, err = config.Load(writeTemp(t, "database:\n  max_open_conns: 8\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Database.MaxOpenConns != 2 {
+		t.Errorf("env 覆盖失败: %d", cfg.Database.MaxOpenConns)
+	}
+}
+
+func TestMaxOpenConnsValidate(t *testing.T) {
+	// 越界值必须被拦截：0/负数会让连接池无法工作，过大只是白白增加内存与锁竞争
+	for _, bad := range []string{"0", "-1", "17"} {
+		_, err := config.Load(writeTemp(t, "database:\n  max_open_conns: "+bad+"\n"))
+		if err == nil {
+			t.Errorf("max_open_conns=%s 应报错", bad)
+		}
+	}
+	// 边界值合法
+	for _, ok := range []string{"1", "16"} {
+		if _, err := config.Load(writeTemp(t, "database:\n  max_open_conns: "+ok+"\n")); err != nil {
+			t.Errorf("max_open_conns=%s 应合法: %v", ok, err)
+		}
 	}
 }

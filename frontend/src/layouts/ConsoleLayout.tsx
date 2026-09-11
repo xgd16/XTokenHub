@@ -192,10 +192,10 @@ export default function ConsoleLayout() {
         </Content>
         <Drawer
           placement="left"
-          width={248}
           open={navOpen}
           onClose={() => setNavOpen(false)}
           closable={false}
+          size={248}
           styles={{ body: { background: 'var(--bg-base)', padding: 0, borderRight: '1px solid var(--border-faint)' } }}
         >
           <Brand onClick={() => go('/')} />

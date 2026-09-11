@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { App, Card, Input, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip } from 'antd'
+import { App, Card, Drawer, Input, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { ClearOutlined, LoadingOutlined, ReloadOutlined } from '@ant-design/icons'
 import LiveDuration from '../components/LiveDuration'
-import LogDetail from '../components/LogDetail'
+import LogDetail, { DetailRows } from '../components/LogDetail'
 import { channelApi, type Channel } from '../api/channel'
 import { keyApi, type APIKey } from '../api/key'
 import { logApi, type CleanupStatus, type LogQuery, type RequestLog } from '../api/log'
@@ -260,6 +260,14 @@ export default function RequestLogs() {
   const [cleanupStatus, setCleanupStatus] = useState<CleanupStatus | null>(null)
   const [cleaning, setCleaning] = useState(false)
 
+  // 详情 Drawer：点击行打开
+  const [detailLog, setDetailLog] = useState<RequestLog | null>(null)
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const showDetail = useCallback((r: RequestLog) => {
+    setDetailLog(r)
+    setDrawerOpen(true)
+  }, [])
+
   const load = useCallback(
     async (p = page) => {
       setLoading(true)
@@ -368,6 +376,7 @@ export default function RequestLogs() {
   }
 
   return (
+    <>
     <Card
       className="panel"
       // 表格背景为不透明直角，padding 0 时会盖住面板底部圆角边框；裁剪 body 底角（10px 圆角 - 1px 边框）对齐
@@ -472,6 +481,7 @@ export default function RequestLogs() {
         dataSource={items}
         size="small"
         scroll={{ x: isMobile ? 480 : 1580 }}
+        onRow={(r) => ({ onClick: () => showDetail(r), style: { cursor: 'pointer' } })}
         onChange={(pager) => {
           setPage(pager.current ?? 1)
           setPerPage(pager.pageSize ?? 20)
@@ -488,5 +498,52 @@ export default function RequestLogs() {
         expandable={isMobile ? { expandedRowRender: (r) => <LogDetail r={r} pending={isPending(r)} /> } : undefined}
       />
     </Card>
+
+    <Drawer
+        title={
+          detailLog ? (
+            <span className="mono" style={{ fontSize: 14 }}>
+              {detailLog.model}
+              <span style={{ color: 'var(--text-faint)', fontSize: 12, marginLeft: 8 }}>#{detailLog.id ?? '—'}</span>
+            </span>
+          ) : '请求详情'
+        }
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        size={isMobile ? '100%' : 520}
+        destroyOnHidden
+      >
+        {detailLog && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {/* 基础字段（与移动端展开行一致） */}
+            <LogDetail r={detailLog} pending={isPending(detailLog)} />
+
+            {/* 额外字段：桌面详情 Drawer 专属 */}
+            <DetailRows
+              rows={[
+                ['会话 ID', detailLog.session_id || '—'],
+                ['花费', money(detailLog.cost_usd || 0)],
+                ['计价口径', costTip(detailLog)],
+              ]}
+            />
+
+            {/* 请求头 */}
+            <div>
+              <div style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 6, letterSpacing: '0.04em' }}>请求头</div>
+              {detailLog.request_headers ? (
+                <DetailRows
+                  rows={Object.entries(JSON.parse(detailLog.request_headers)).map(([k, v]) => [
+                    k,
+                    Array.isArray(v) ? v.join(', ') : String(v),
+                  ])}
+                />
+              ) : (
+                <div style={{ color: 'var(--text-faint)', fontSize: 12, padding: '8px 0' }}>无请求头数据</div>
+              )}
+            </div>
+          </div>
+        )}
+      </Drawer>
+    </>
   )
 }

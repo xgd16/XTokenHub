@@ -82,7 +82,7 @@ const TREND_RANGES: { key: TrendRangeKey; label: string; hours: number; bucket: 
   { key: 'd30', label: '30 天', hours: 720, bucket: 'day', days: 30 },
 ]
 
-/** 统计卡片：数字驱动 + 弹簧滚动；value 为 null 显示占位。 */
+/** 统计卡片：数字驱动 + 弹簧滚动；value 为 null 显示骨架占位。 */
 const StatCard = memo(function StatCard(props: {
   label: string
   value: number | null
@@ -99,17 +99,27 @@ const StatCard = memo(function StatCard(props: {
       return () => clearTimeout(t)
     }
   }, [value, tick])
-  const num = value == null
+  const loading = value == null
   return (
     <div className="panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '16px 18px', overflow: 'hidden' }}>
       <Text style={{ color: 'var(--text-secondary)', fontSize: 12, letterSpacing: '0.06em' }}>{label}</Text>
-      <div
-        className={`mono ${flash ? 'tick' : ''}`}
-        style={{ fontSize: 26, fontWeight: 600, marginTop: 6, lineHeight: 1.2 }}
-      >
-        {num ? '—' : <AnimatedNumber value={value} format={format ?? intText} />}
-      </div>
-      {sub && <div style={{ fontSize: 12, color: 'var(--text-faint)', marginTop: 4 }}>{sub}</div>}
+      {loading ? (
+        <div style={{ marginTop: 6 }}>
+          <div className="skeleton-stat-number" />
+        </div>
+      ) : (
+        <div
+          className={`mono ${flash ? 'tick' : ''}`}
+          style={{ fontSize: 26, fontWeight: 600, marginTop: 6, lineHeight: 1.2 }}
+        >
+          <AnimatedNumber value={value} format={format ?? intText} />
+        </div>
+      )}
+      {loading ? (
+        <div className="skeleton-stat-sub" />
+      ) : (
+        sub && <div style={{ fontSize: 12, color: 'var(--text-faint)', marginTop: 4 }}>{sub}</div>
+      )}
     </div>
   )
 })
@@ -129,8 +139,29 @@ const ThroughputTicker = memo(function ThroughputTicker() {
   )
 })
 
+/** 通用 TOP 条形列表骨架（加载中）。 */
+function UsageBarsSkeleton() {
+  const widths = [80, 60, 45]
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {widths.map((w, i) => (
+        <div key={i}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+            <span className="skeleton-bar" style={{ width: `${w}%`, height: 12 }} />
+            <span className="skeleton-bar" style={{ width: '25%', height: 12, animationDelay: '0.1s' }} />
+          </div>
+          <div className="skeleton-bar-track">
+            <div className="skeleton-bar-fill" style={{ width: `${90 - i * 25}%`, animationDelay: `${i * 0.15}s` }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 /** 通用 TOP 条形列表（模型 TOP / 调用方 TOP 共用）。 */
-const UsageBars = memo(function UsageBars({ rows }: { rows: ModelRank[] }) {
+const UsageBars = memo(function UsageBars({ rows, loading = false }: { rows: ModelRank[]; loading?: boolean }) {
+  if (loading && rows.length === 0) return <UsageBarsSkeleton />
   const { format: money } = useMoneyFormat()
   const max = Math.max(...rows.map((x) => x.requests), 1)
   return (
@@ -529,6 +560,21 @@ function sessionColumns(isMobile: boolean, onHeaders: (r: RequestLog) => void): 
   ] as TableColumnsType<SessionGroup>).filter((c) => !isMobile || MOBILE_SESSION_KEYS.has(String(c.key)))
 }
 
+/** 骨架行：模拟展开加载时的表格行布局。 */
+function DetailSkeleton() {
+  return (
+    <div style={{ padding: '10px 8px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {[0, 1, 2].map((i) => (
+        <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+          <span className="skeleton-bar short" style={{ animationDelay: `${i * 0.15}s` }} />
+          <span className="skeleton-bar medium" style={{ animationDelay: `${i * 0.15 + 0.08}s` }} />
+          <span className="skeleton-bar long" style={{ animationDelay: `${i * 0.15 + 0.16}s` }} />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 /** 会话组展开内容：明细按需拉取最近 LIVE_DETAIL_MAX 条（后端聚合行不含全量行，
  *  展开时按 session_id 查询）；合计仍是全量口径，明细少于总数时给出提示。 */
 const SessionDetail = memo(function SessionDetail(props: {
@@ -542,15 +588,11 @@ const SessionDetail = memo(function SessionDetail(props: {
     if (!g.loaded) onLoad(g)
   }, [g, onLoad])
   if (!g.loaded) {
-    return (
-      <div style={{ color: 'var(--text-faint)', padding: '12px 8px', fontSize: 12 }}>
-        加载中…（共 {g.count} 次请求）
-      </div>
-    )
+    return <DetailSkeleton />
   }
   const hidden = g.count - g.requests.length
   return (
-    <>
+    <div className="live-detail-loaded">
       <Table<RequestLog>
         size="small"
         rowKey={(r) => (r.req_id && !r.id ? `live-${r.req_id}` : `${r.id}-${r.created_at}`)}
@@ -565,7 +607,7 @@ const SessionDetail = memo(function SessionDetail(props: {
           仅显示最近 {g.requests.length} 条，另有 {hidden} 条未列出；上方合计为全部 {g.count} 次请求。
         </div>
       )}
-    </>
+    </div>
   )
 })
 
@@ -667,7 +709,12 @@ export default function Dashboard() {
   const lastStatsRefreshRef = useRef(0)
   const lastSlowRefreshRef = useRef(0)
 
+  // 初始加载追踪：首次 API 返回后切换为 false，给子组件传 loading 控制骨架显示
+  const [statsLoaded, setStatsLoaded] = useState(false)
+  const [slowLoaded, setSlowLoaded] = useState(false)
+
   // 快速刷新：当天汇总 + 请求趋势 + 当天模型 TOP
+  const statsLoadedOnce = useRef(false)
   const refresh = useCallback(async () => {
     const r = TREND_RANGES.find((x) => x.key === rangeRef.current) ?? TREND_RANGES[2]
     const [s, t, m, ct] = await Promise.all([
@@ -680,6 +727,10 @@ export default function Dashboard() {
     setTrend(t)
     setByModel(m)
     setCostToday(ct)
+    if (!statsLoadedOnce.current) {
+      statsLoadedOnce.current = true
+      setStatsLoaded(true)
+    }
   }, [])
 
   // 仅刷新趋势：实时档借吞吐推送（恒定 2Hz）推进空桶，无需连带重拉汇总/模型 TOP。
@@ -696,6 +747,7 @@ export default function Dashboard() {
   }, [])
 
   // 慢速刷新：全历史累计 + 热力图（26 周）+ 模型趋势/用量 + 调用方 TOP（按日聚合，无需高频）
+  const slowLoadedOnce = useRef(false)
   const refreshSlow = useCallback(async () => {
     const days = rangeDaysRef.current
     const [lt, hp, mt, bk, cm] = await Promise.all([
@@ -710,6 +762,10 @@ export default function Dashboard() {
     setModelTrend(mt)
     setByKey(bk)
     setCostMonth(cm)
+    if (!slowLoadedOnce.current) {
+      slowLoadedOnce.current = true
+      setSlowLoaded(true)
+    }
   }, [])
 
   // 展开会话的明细：按组键拉最近 LIVE_DETAIL_MAX 条（后端聚合行不含全量行）。
@@ -1041,7 +1097,7 @@ export default function Dashboard() {
               </div>
             }
           >
-            <TrendChart data={series} height={isMobile ? 190 : 232} ariaLabel={`${rangeConf.label}请求趋势`} />
+            <TrendChart data={series} height={isMobile ? 190 : 232} ariaLabel={`${rangeConf.label}请求趋势`} loading={!statsLoaded} />
           </Card>
         </Col>
         <Col xs={24} lg={10}>
@@ -1051,7 +1107,7 @@ export default function Dashboard() {
             styles={{ body: { padding: '14px 16px 16px' }, header: { borderBottom: '1px solid var(--border-faint)' } }}
             title={<span style={panelHeaderStyle}>模型 TOP · 今天</span>}
           >
-<UsageBars rows={ranked} />
+<UsageBars rows={ranked} loading={!statsLoaded} />
           </Card>
         </Col>
       </Row>
@@ -1082,7 +1138,7 @@ export default function Dashboard() {
               </div>
             }
           >
-            <ModelTrendChart data={mt} height={isMobile ? 200 : 244} />
+            <ModelTrendChart data={mt} height={isMobile ? 200 : 244} loading={!slowLoaded} />
           </Card>
         </Col>
         <Col xs={24} lg={10}>
@@ -1093,7 +1149,7 @@ export default function Dashboard() {
             title={<span style={panelHeaderStyle}>模型用量</span>}
             extra={<span className="mono" style={{ fontSize: 12, color: 'var(--text-faint)' }}>{rangeDays === 7 ? '近 7 日' : '近 30 日'}</span>}
           >
-            <ModelDonut slices={donut.slices} total={donut.total} size={isMobile ? 150 : 170} />
+            <ModelDonut slices={donut.slices} total={donut.total} size={isMobile ? 150 : 170} loading={!slowLoaded} />
           </Card>
         </Col>
       </Row>
@@ -1123,7 +1179,7 @@ export default function Dashboard() {
               />
             }
           >
-            <TokenHeatmap data={heat} mode={heatMode} />
+            <TokenHeatmap data={heat} mode={heatMode} loading={!slowLoaded} />
             <div style={{ display: 'flex', flexShrink: 0, justifyContent: 'flex-end', alignItems: 'center', gap: 4, marginTop: 8, fontSize: 11, color: 'var(--text-faint)' }}>
               <span>少</span>
               {[0, 1, 2, 3, 4].map((lv) => (
@@ -1149,7 +1205,7 @@ export default function Dashboard() {
             title={<span style={panelHeaderStyle}>调用方 TOP · 30 天</span>}
             extra={<span className="mono" style={{ fontSize: 12, color: 'var(--text-faint)' }}>按密钥</span>}
           >
-            <UsageBars rows={keyRanked} />
+            <UsageBars rows={keyRanked} loading={!slowLoaded} />
           </Card>
         </Col>
       </Row>
@@ -1182,7 +1238,7 @@ export default function Dashboard() {
         title="请求头"
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
-        width={isMobile ? '100%' : 520}
+        size={isMobile ? '100%' : 520}
         destroyOnHidden
       >
         {headerLog?.request_headers ? (

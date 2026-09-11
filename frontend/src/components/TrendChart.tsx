@@ -85,7 +85,7 @@ function computeGeometry(data: SeriesPoint[], H: number): Geometry {
 }
 
 /** 纯 SVG 请求趋势折线图：零第三方图表依赖，空数据/单点均安全渲染。 */
-export default function TrendChart({ data, height = 230, ariaLabel = '请求趋势' }: { data: SeriesPoint[]; height?: number; ariaLabel?: string }) {
+export default function TrendChart({ data, height = 230, ariaLabel = '请求趋势', loading = false }: { data: SeriesPoint[]; height?: number; ariaLabel?: string; loading?: boolean }) {
   const pal = useChartPalette()
   const gradId = useId()
   const svgRef = useRef<SVGSVGElement | null>(null)
@@ -106,6 +106,27 @@ export default function TrendChart({ data, height = 230, ariaLabel = '请求趋�
   }
 
   if (geo.empty) {
+    if (loading) {
+      const PAD = { l: 46, r: 20, t: 22, b: 28 }
+      const W = 800
+      const iw = W - PAD.l - PAD.r
+      const ih = height - PAD.t - PAD.b
+      // 模拟一条微波动的骨架折线
+      const pts = Array.from({ length: 12 }, (_, i) => {
+        const x = PAD.l + (i / 11) * iw
+        const y = PAD.t + ih * (0.35 + 0.3 * Math.sin(i * 0.8))
+        return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)} ${y.toFixed(1)}`
+      }).join(' ')
+      return (
+        <svg viewBox={`0 0 ${W} ${height}`} width="100%" style={{ display: 'block' }}>
+          {/* 网格线骨架 */}
+          {[0, 0.5, 1].map((f) => (
+            <line key={f} x1={PAD.l} x2={W - PAD.r} y1={PAD.t + ih * f} y2={PAD.t + ih * f} stroke="var(--track-bg)" strokeDasharray="3 4" />
+          ))}
+          <path d={pts} fill="none" stroke="var(--track-bg)" strokeWidth="2" strokeLinecap="round" className="skeleton-chart-wave" />
+        </svg>
+      )
+    }
     return (
       <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-faint)', fontSize: 12 }}>
         暂无数据

@@ -264,7 +264,10 @@ func TestTrendByBucket(t *testing.T) {
 	db := NewTestDB(t)
 	repo := repository.NewRequestLogRepository(db)
 	ctx := context.Background()
-	now := time.Now()
+	// 固定在「整点后 30 分」：若直接用 time.Now()，当它落在整点后 2 分钟内时
+	// now-2min 会跨到上一小时，使两个种子行分落两桶，断言随之翻转（此前会在
+	// 每小时的头两分钟随机失败）。
+	now := time.Now().Truncate(time.Hour).Add(30 * time.Minute)
 	hourAgo := now.Add(-time.Hour)
 
 	seedLogs(t, repo, []model.RequestLog{

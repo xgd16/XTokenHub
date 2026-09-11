@@ -108,6 +108,29 @@ func (r *logRepo) statWindow(ctx context.Context, since time.Time) *gorm.DB {
 	return r.db.WithContext(ctx).Model(&model.RequestLog{}).Where("created_at >= ?", since)
 }
 
+// dayBucketSQL 本地日整数桶表达式，占位符为本地时区偏移（秒）。
+//
+// 不用 SQLite 的 DATE(created_at, 'localtime')：该修饰符在纯 Go 驱动
+// (modernc/glebarez) 下要逐行走 Go 时区转换，实测 4600 行需 266~402ms，
+// 而等价的整数运算只要 17ms（见 bucketToDate 注释），慢 15~20 倍。
+const dayBucketSQL = "(CAST(strftime('%s', created_at) AS INTEGER) + ?) / 86400"
+
+// localDayOffset 当前本地时区相对 UTC 的偏移秒数（如东八区为 28800）。
+// 与 DATE(created_at,'localtime') 同口径；偏移在查询时刻取一次，跨夏令时切换日
+// 与逐行换算可能相差 1 小时，非夏令时时区（如 Asia/Shanghai）完全一致。
+func localDayOffset() int64 {
+	_, off := time.Now().Zone()
+	return int64(off)
+}
+
+// bucketToDate 把 dayBucketSQL 得到的天桶还原为本地日期 'YYYY-MM-DD'。
+// 桶号本身即「本地日」的日序号：本地日期 X 的零点在 UTC 上是 X*86400-offset，
+// 代入 dayBucketSQL 得 (X*86400-offset+offset)/86400 = X，故按 UTC 格式化 X*86400
+// 即得该本地日期（不要再减一次 offset，否则整体前移一天）。
+func bucketToDate(bucket int64) string {
+	return time.Unix(bucket*86400, 0).UTC().Format("2006-01-02")
+}
+
 func (r *logRepo) Summary(ctx context.Context, since time.Time) (*Summary, error) {
 	var s Summary
 	row := struct {
@@ -171,18 +194,37 @@ func (r *logRepo) TrendByBucket(ctx context.Context, since time.Time, bucketSec 
 	return points, err
 }
 
+// TrendByDay 按本地日聚合（见 dayBucketSQL：不用缓慢的 'localtime' 修饰符）。
 func (r *logRepo) TrendByDay(ctx context.Context, since time.Time) ([]TrendPoint, error) {
-	var points []TrendPoint
-	err := r.statWindow(ctx, since).Select(
-		"DATE(created_at, 'localtime') AS date, COUNT(*) AS requests, " +
-			"COALESCE(SUM(prompt_tokens + completion_tokens),0) AS total_tokens, " +
-			"COALESCE(SUM(cost_usd),0) AS cost_usd, " +
-			"SUM(CASE WHEN error <> '' THEN 1 ELSE 0 END) AS error_requests",
-	).Group("DATE(created_at, 'localtime')").Order("date ASC").Scan(&points).Error
-	if points == nil {
-		points = []TrendPoint{}
+	offset := localDayOffset()
+	var rows []struct {
+		Bucket      int64
+		Requests    int64
+		TotalTokens int64
+		CostUSD     float64
+		ErrorReqs   int64
 	}
-	return points, err
+	err := r.statWindow(ctx, since).Select(
+		dayBucketSQL+" AS bucket, COUNT(*) AS requests, "+
+			"COALESCE(SUM(prompt_tokens + completion_tokens),0) AS total_tokens, "+
+			"COALESCE(SUM(cost_usd),0) AS cost_usd, "+
+			"SUM(CASE WHEN error <> '' THEN 1 ELSE 0 END) AS error_reqs",
+		offset,
+	).Group("bucket").Order("bucket ASC").Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	points := make([]TrendPoint, 0, len(rows))
+	for _, row := range rows {
+		points = append(points, TrendPoint{
+			Date:        bucketToDate(row.Bucket),
+			Requests:    row.Requests,
+			TotalTokens: row.TotalTokens,
+			CostUSD:     row.CostUSD,
+			ErrorReqs:   row.ErrorReqs,
+		})
+	}
+	return points, nil
 }
 
 func groupScan(rows []struct {
@@ -348,17 +390,31 @@ func (r *logRepo) CostSince(ctx context.Context, since, until time.Time) (float6
 	return row.Cost, row.Requests, nil
 }
 
-// CostByDay 按日聚合费用与请求数（本地时区日期键）。
+// CostByDay 按日聚合费用与请求数（本地时区日期键，见 dayBucketSQL）。
 func (r *logRepo) CostByDay(ctx context.Context, since time.Time) ([]DayCost, error) {
-	var rows []DayCost
-	err := r.statWindow(ctx, since).Select(
-		"DATE(created_at, 'localtime') AS date, COUNT(*) AS requests, " +
-			"COALESCE(SUM(cost_usd),0) AS cost_usd",
-	).Group("DATE(created_at, 'localtime')").Order("date ASC").Scan(&rows).Error
-	if rows == nil {
-		rows = []DayCost{}
+	offset := localDayOffset()
+	var rows []struct {
+		Bucket   int64
+		Requests int64
+		CostUSD  float64
 	}
-	return rows, err
+	err := r.statWindow(ctx, since).Select(
+		dayBucketSQL+" AS bucket, COUNT(*) AS requests, "+
+			"COALESCE(SUM(cost_usd),0) AS cost_usd",
+		offset,
+	).Group("bucket").Order("bucket ASC").Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DayCost, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, DayCost{
+			Date:     bucketToDate(row.Bucket),
+			Requests: row.Requests,
+			CostUSD:  row.CostUSD,
+		})
+	}
+	return out, nil
 }
 
 // ModelsWithUsage 时间窗内有用量的模型及其用量，按总 token 倒序，最多 limit 条。
@@ -411,40 +467,78 @@ func (r *logRepo) UpdateCost(ctx context.Context, id int64, costUSD float64, sty
 		}).Error
 }
 
-// DailyUsage 按日聚合请求数 / token / 成功请求最大耗时。
+// DailyUsage 按日聚合请求数 / token / 成功请求最大耗时（本地日桶，见 dayBucketSQL）。
 func (r *logRepo) DailyUsage(ctx context.Context, since time.Time) ([]DayUsage, error) {
-	var rows []DayUsage
+	offset := localDayOffset()
 	q := r.db.WithContext(ctx).Model(&model.RequestLog{})
 	if !since.IsZero() {
 		q = q.Where("created_at >= ?", since)
 	}
-	err := q.Select(
-		"DATE(created_at, 'localtime') AS date, COUNT(*) AS requests, " +
-			"COALESCE(SUM(prompt_tokens + completion_tokens),0) AS total_tokens, " +
-			"COALESCE(MAX(CASE WHEN error = '' THEN duration_ms ELSE 0 END),0) AS max_duration_ms",
-	).Group("DATE(created_at, 'localtime')").Order("date ASC").Scan(&rows).Error
-	if rows == nil {
-		rows = []DayUsage{}
+	var rows []struct {
+		Bucket        int64
+		Requests      int64
+		TotalTokens   int64
+		MaxDurationMS int64
 	}
-	return rows, err
+	err := q.Select(
+		dayBucketSQL+" AS bucket, COUNT(*) AS requests, "+
+			"COALESCE(SUM(prompt_tokens + completion_tokens),0) AS total_tokens, "+
+			"COALESCE(MAX(CASE WHEN error = '' THEN duration_ms ELSE 0 END),0) AS max_duration_ms",
+		offset,
+	).Group("bucket").Order("bucket ASC").Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DayUsage, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, DayUsage{
+			Date:          bucketToDate(row.Bucket),
+			Requests:      row.Requests,
+			TotalTokens:   row.TotalTokens,
+			MaxDurationMS: row.MaxDurationMS,
+		})
+	}
+	return out, nil
 }
 
-// TrendByDayModel 按日 × 模型聚合 token 用量（含错误请求，与按日趋势口径一致）。
+// TrendByDayModel 按日 × 模型聚合 token 用量（含错误请求，与按日趋势口径一致；
+// 本地日桶见 dayBucketSQL）。
 func (r *logRepo) TrendByDayModel(ctx context.Context, since time.Time) ([]ModelDayPoint, error) {
-	var rows []ModelDayPoint
-	err := r.statWindow(ctx, since).Select(
-		"DATE(created_at, 'localtime') AS date, model, " +
-			"COALESCE(SUM(prompt_tokens + completion_tokens),0) AS total_tokens",
-	).Group("DATE(created_at, 'localtime'), model").Order("date ASC").Scan(&rows).Error
-	if rows == nil {
-		rows = []ModelDayPoint{}
+	offset := localDayOffset()
+	var rows []struct {
+		Bucket      int64
+		Model       string
+		TotalTokens int64
 	}
-	return rows, err
+	err := r.statWindow(ctx, since).Select(
+		dayBucketSQL+" AS bucket, model, "+
+			"COALESCE(SUM(prompt_tokens + completion_tokens),0) AS total_tokens",
+		offset,
+	).Group("bucket, model").Order("bucket ASC").Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ModelDayPoint, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, ModelDayPoint{
+			Date:        bucketToDate(row.Bucket),
+			Model:       row.Model,
+			TotalTokens: row.TotalTokens,
+		})
+	}
+	return out, nil
 }
 
 // sessionKeyExpr 会话分组键：有 session_id 按会话归并，否则按自身主键独立成组。
 // 与前端 groupBySession 的分组语义一致（sess:<id> / req:<id>）。
 const sessionKeyExpr = "CASE WHEN session_id <> '' THEN 'sess:' || session_id ELSE 'req:' || id END"
+
+// liveSessionCols 会话聚合实际用到的列，刻意不含 request_headers（单行可达 4KB）：
+// 聚合只要数值与标签，而纯 Go 驱动逐行解码肥列正是 live-sessions 的主要耗时。
+// 散行（单次请求）需要整行时再按 id 单独补查，见 LiveSessions 末尾。
+const liveSessionCols = "id, created_at, session_id, prompt_tokens, completion_tokens, " +
+	"total_tokens, cached_tokens, duration_ms, error, user_agent, key_name, " +
+	"model, channel_name, protocol, forward_mode"
 
 // LiveSessions 最近活跃会话聚合：先按会话键取最近活跃的 N 组，再拉这些组的全部行
 // 在内存中汇总——统计覆盖全量历史，不因前端只保留 200 行而残缺。
@@ -479,6 +573,7 @@ func (r *logRepo) LiveSessions(ctx context.Context, in LiveSessionsInput) ([]Liv
 	}
 	var rows []model.RequestLog
 	err = r.db.WithContext(ctx).Model(&model.RequestLog{}).
+		Select(liveSessionCols).
 		Where(sessionKeyExpr+" IN ?", skeys).
 		Order("created_at DESC, id DESC").
 		Find(&rows).Error
@@ -543,6 +638,28 @@ func (r *logRepo) LiveSessions(ctx context.Context, in LiveSessionsInput) ([]Liv
 		g.Modes = appendUnique(g.Modes, string(row.ForwardMode))
 	}
 
+	// 散行（单次请求）要把整行带回前端（展示状态/明细/请求头），但上面刻意没读
+	// request_headers；这里只对这几个 id 补一批完整行，避免为全部会话行解码肥列。
+	var singleIDs []int64
+	for i := range keys {
+		if g := byKey[keys[i].Key]; g != nil && g.Requests == 1 {
+			if lr := latest[keys[i].Key]; lr != nil {
+				singleIDs = append(singleIDs, lr.ID)
+			}
+		}
+	}
+	full := make(map[int64]*model.RequestLog, len(singleIDs))
+	if len(singleIDs) > 0 {
+		var fullRows []model.RequestLog
+		if err := r.db.WithContext(ctx).Model(&model.RequestLog{}).
+			Where("id IN ?", singleIDs).Find(&fullRows).Error; err != nil {
+			return nil, fmt.Errorf("live sessions full rows: %w", err)
+		}
+		for i := range fullRows {
+			full[fullRows[i].ID] = &fullRows[i]
+		}
+	}
+
 	out := make([]LiveSession, 0, len(keys))
 	for i := range keys {
 		g := byKey[keys[i].Key]
@@ -551,7 +668,13 @@ func (r *logRepo) LiveSessions(ctx context.Context, in LiveSessionsInput) ([]Liv
 		}
 		// 散行（单次请求）直接带上整行，前端无需再查即可展示状态/明细/请求头
 		if g.Requests == 1 {
-			g.LastRequest = latest[keys[i].Key]
+			if lr := latest[keys[i].Key]; lr != nil {
+				if f := full[lr.ID]; f != nil {
+					g.LastRequest = f
+				} else {
+					g.LastRequest = lr
+				}
+			}
 		}
 		out = append(out, *g)
 	}

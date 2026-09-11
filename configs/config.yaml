@@ -8,6 +8,8 @@ database:
   driver: sqlite     # 纯 Go 驱动 glebarez/sqlite
   path: data/xtokenhub.db
   enable_log: false
+  max_open_conns: 4  # 连接池上限(1~16)。WAL 下读可并发，>1 才能让仪表盘多接口真正并行；
+                     # 写仍由 SQLite 串行化。弱设备(如手机)可适当调小。
 
 log:
   level: info        # debug | info | warn | error

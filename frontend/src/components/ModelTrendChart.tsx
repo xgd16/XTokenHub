@@ -37,13 +37,14 @@ interface Props {
   data: ModelTrendData
   height?: number
   ariaLabel?: string
+  loading?: boolean
 }
 
 const W = 800
 const PAD = { l: 52, r: 20, t: 18, b: 28 }
 
 /** 纯 SVG 多模型每日 token 趋势图：平滑曲线 + 图例 + 十字准线悬浮明细，零第三方图表依赖。 */
-export default function ModelTrendChart({ data, height = 260, ariaLabel = '每日 Token 趋势图' }: Props) {
+export default function ModelTrendChart({ data, height = 260, ariaLabel = '每日 Token 趋势图', loading = false }: Props) {
   const pal = useChartPalette()
   const svgRef = useRef<SVGSVGElement | null>(null)
   const [hoverIdx, setHoverIdx] = useState<number | null>(null)
@@ -94,6 +95,35 @@ export default function ModelTrendChart({ data, height = 260, ariaLabel = '每�
           .map((p) => ({ name: p.name, color: p.color, value: p.values[hoverIdx] }))
           .filter((r) => r.value > 0)
           .sort((a, b) => b.value - a.value)
+
+  // 加载中且无数据时显示骨架
+  if (loading && geo.empty) {
+    const iw = W - PAD.l - PAD.r
+    const ih = height - PAD.t - PAD.b
+    const waveColors = ['var(--track-bg)', 'rgba(94,128,148,0.08)']
+    return (
+      <div>
+        <div style={{ display: 'flex', gap: 12, marginBottom: 8 }}>
+          {[56, 72, 48].map((w, i) => (
+            <span key={i} className="skeleton-bar" style={{ width: w, height: 12, animationDelay: `${i * 0.1}s` }} />
+          ))}
+        </div>
+        <svg viewBox={`0 0 ${W} ${height}`} width="100%" style={{ display: 'block' }}>
+          {[0, 0.5, 1].map((f) => (
+            <line key={f} x1={PAD.l} x2={W - PAD.r} y1={PAD.t + ih * f} y2={PAD.t + ih * f} stroke="var(--track-bg)" strokeDasharray="3 4" />
+          ))}
+          {[0.3, 0.55, 0.75].map((base, si) => {
+            const pts = Array.from({ length: 10 }, (_, i) => {
+              const x = PAD.l + (i / 9) * iw
+              const y = PAD.t + ih * (base + 0.12 * Math.sin(i * 0.9 + si * 2))
+              return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)} ${y.toFixed(1)}`
+            }).join(' ')
+            return <path key={si} d={pts} fill="none" stroke={waveColors[si % 2]} strokeWidth="2" strokeLinecap="round" className="skeleton-chart-wave" style={{ animationDelay: `${si * 0.2}s` }} />
+          })}
+        </svg>
+      </div>
+    )
+  }
 
   return (
     <div>

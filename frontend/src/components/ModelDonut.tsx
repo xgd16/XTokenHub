@@ -7,14 +7,38 @@ interface Props {
   slices: DonutSlice[]
   total: number
   size?: number
+  loading?: boolean
 }
 
 /** 环图（纯 SVG stroke-dasharray 实现）+ 右侧图例：悬浮扇区加粗、中心切换占比、图例同步高亮。 */
-export default function ModelDonut({ slices, total, size = 220 }: Props) {
+export default function ModelDonut({ slices, total, size = 220, loading = false }: Props) {
   const pal = useChartPalette()
   const [hover, setHover] = useState<string | null>(null)
   const R = 70
   const C = 2 * Math.PI * R
+
+  // 加载中且无数据时显示骨架
+  if (loading && slices.length === 0) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
+        <div style={{ position: 'relative', width: size, height: size, flexShrink: 0, margin: '0 auto' }}>
+          <svg viewBox="0 0 200 200" width={size} height={size}>
+            <circle cx="100" cy="100" r={R} fill="none" stroke="var(--track-bg)" strokeWidth="26" className="skeleton-donut-ring" />
+            <circle cx="100" cy="100" r={R} fill="none" stroke="var(--track-bg)" strokeWidth="26" strokeDasharray={`${C * 0.35} ${C * 0.65}`} strokeDashoffset={0} className="skeleton-donut-ring" style={{ animationDelay: '0.2s' }} opacity={0.5} />
+          </svg>
+        </div>
+        <div style={{ flex: 1, minWidth: 240 }}>
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px', borderBottom: '1px solid var(--border-faint)' }}>
+              <span className="skeleton-bar" style={{ width: 9, height: 9, borderRadius: '50%', animationDelay: `${i * 0.1}s` }} />
+              <span className="skeleton-bar" style={{ width: `${50 + i * 8}%`, height: 13, animationDelay: `${i * 0.1 + 0.05}s` }} />
+              <span className="skeleton-bar" style={{ width: 36, height: 13, marginLeft: 'auto', animationDelay: `${i * 0.1 + 0.1}s` }} />
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
   let acc = 0
   const arcs = slices.map((s) => {
     const frac = total > 0 ? s.value / total : 0
