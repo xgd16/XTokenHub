@@ -35,8 +35,10 @@ const { Text } = Typography
 
 /** 百分比格式化：入参为 0~100 的数值（配合 AnimatedNumber 滚动）。 */
 const pct = (n: number) => `${Math.round(n * 10) / 10}%`
-/** 连续天数格式化。 */
-const streak = (n: number) => `${n} 天`
+/** 连续天数格式化（滚动中间值带小数，需自己取整）。 */
+const streak = (n: number) => `${Math.round(n)} 天`
+/** 未指定 format 的卡片默认格式（纯计数类，取整避免滚动时露小数）。 */
+const intText = (n: number) => String(Math.round(n))
 
 /** 预测基准的中文说明。 */
 const basisLabel = (basis: string) => (basis === 'run_rate' ? '按近 7 日均值' : '按当前速率')
@@ -105,7 +107,7 @@ const StatCard = memo(function StatCard(props: {
         className={`mono ${flash ? 'tick' : ''}`}
         style={{ fontSize: 26, fontWeight: 600, marginTop: 6, lineHeight: 1.2 }}
       >
-        {num ? '—' : <AnimatedNumber value={value} format={format ?? String} />}
+        {num ? '—' : <AnimatedNumber value={value} format={format ?? intText} />}
       </div>
       {sub && <div style={{ fontSize: 12, color: 'var(--text-faint)', marginTop: 4 }}>{sub}</div>}
     </div>

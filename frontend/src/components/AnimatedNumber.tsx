@@ -4,8 +4,9 @@ import { motion, useMotionValue, useSpring, useTransform } from 'motion/react'
 
 interface AnimatedNumberProps {
   value: number
-  /** 数值格式化函数（如 compactCN、percent）。
-   *  注意：会被滚动中的中间值反复调用，需为非数值字符生成不变化的纯函数。 */
+  /** 数值格式化函数（如 compactCN、money）。
+   *  注意：会被滚动中的中间值反复调用，必须自己处理小数（需要整数就在函数里 round），
+   *  且对同一数值必须稳定返回，否则数字会在滚动中抖动。 */
   format: (n: number) => string
 }
 
@@ -13,7 +14,8 @@ interface AnimatedNumberProps {
 export function AnimatedNumber({ value, format }: AnimatedNumberProps) {
   const mv = useMotionValue(0)
   const spring = useSpring(mv, { stiffness: 88, damping: 24, mass: 0.7 })
-  const text = useTransform(spring, (v) => format(Math.round(v)))
+  // 不在这里取整：金额是小数美元，先 round 再换汇会把 $2.39 显示成 ¥14.40（= $2 × 7.2）
+  const text = useTransform(spring, (v) => format(v))
 
   useEffect(() => {
     mv.set(value)
