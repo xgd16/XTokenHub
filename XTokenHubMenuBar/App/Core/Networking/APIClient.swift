@@ -109,6 +109,16 @@ struct APIClient: Sendable {
         try await get("settings/billing", [])
     }
 
+    /// 配置了峰谷时段价的价目行(peak_only 过滤由后端完成;手工行,实际远少于 200)。
+    func peakPrices() async throws -> [ModelPrice] {
+        let data: PageData<ModelPrice> = try await get("settings/prices", [
+            URLQueryItem(name: "peak_only", value: "1"),
+            URLQueryItem(name: "page", value: "1"),
+            URLQueryItem(name: "per_page", value: "200"),
+        ])
+        return data.items
+    }
+
     // MARK: - 内部
 
     private func get<T: Decodable & Sendable>(_ path: String, _ query: [URLQueryItem]) async throws -> T {

@@ -37,6 +37,8 @@ import {
 } from '../utils/money'
 import { setMoneyOptions } from '../utils/useMoneyFormat'
 import { Reveal } from '../utils/motion'
+import { useNow } from '../utils/useNow'
+import { peakPeriodAt } from '../utils/peakWindow'
 
 const { Text } = Typography
 
@@ -414,6 +416,9 @@ export default function Settings() {
     [removeConfig, toggleEnabled],
   )
 
+  // 时段列的「当前峰/谷」标记随真实时间变化，每 30s 重算一次
+  const now = useNow()
+
   const priceColumns: TableColumnsType<ModelPrice> = useMemo(
     () => [
       {
@@ -442,22 +447,38 @@ export default function Settings() {
         title: '时段',
         key: 'peakWindow',
         width: 96,
-        render: (_, p) =>
-          p.peak_window ? (
-            <Tooltip
-              title={
-                <>
-                  高峰时段（北京时间）：{p.peak_window}
-                  <br />
-                  空闲时段按其半价左右的 off-peak 费率计价
-                </>
-              }
-            >
-              <Tag color="orange" style={{ background: 'transparent' }}>错峰</Tag>
+        render: (_, p) => {
+          if (!p.peak_window) {
+            return <Text type="secondary" style={{ fontSize: 12 }}>—</Text>
+          }
+          const period = peakPeriodAt(p.peak_window, new Date(now))
+          const tooltip = (
+            <>
+              高峰时段（北京时间）：{p.peak_window}
+              <br />
+              {period === 'peak'
+                ? '当前处于高峰时段，按高峰费率计价'
+                : period === 'off_peak'
+                  ? '当前处于空闲时段，按 off-peak 费率计价'
+                  : '空闲时段按其半价左右的 off-peak 费率计价'}
+            </>
+          )
+          // 规则解析失败时退回静态标记，不臆造当前时段
+          if (period === null) {
+            return (
+              <Tooltip title={tooltip}>
+                <Tag color="orange" style={{ background: 'transparent' }}>错峰</Tag>
+              </Tooltip>
+            )
+          }
+          return (
+            <Tooltip title={tooltip}>
+              <Tag color={period === 'peak' ? 'orange' : 'green'} style={{ background: 'transparent' }}>
+                {period === 'peak' ? '高峰价' : '空闲价'}
+              </Tag>
             </Tooltip>
-          ) : (
-            <Text type="secondary" style={{ fontSize: 12 }}>—</Text>
-          ),
+          )
+        },
       },
       {
         title: '输入',
@@ -519,7 +540,7 @@ export default function Settings() {
         ),
       },
     ],
-    [removePrice],
+    [removePrice, now],
   )
 
   const lastSyncText = status?.last_sync_at ? new Date(status.last_sync_at).toLocaleString() : '尚未同步'

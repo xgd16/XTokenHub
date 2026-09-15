@@ -22,6 +22,17 @@ struct LargeWidgetView: View {
 
                 MetricGrid(summary: summary, costToday: entry.costToday, options: entry.snapshot.moneyOptions)
 
+                // 峰谷状态：有配置时段价的模型才出现（单行 13pt + 间隙 9pt，趋势图弹性吸收）
+                if let lead = entry.peakLead(at: entry.date) {
+                    gap()
+                    PeakStatusRow(
+                        lead: lead,
+                        date: entry.date,
+                        showsModel: true,
+                        extraCount: entry.peakPrices.count - 1
+                    )
+                }
+
                 gap()
 
                 SectionLabel(text: "Token 用量趋势（24 小时）")

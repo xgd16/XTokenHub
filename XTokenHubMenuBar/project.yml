@@ -107,6 +107,9 @@ targets:
     platform: macOS
     sources:
       - path: Tests
+        excludes:
+          # 小组件排版测试依赖 Widget 源码,由 XTokenHubWidgetTests 单独编译
+          - "Widget"
     dependencies:
       - target: XTokenHubMenuBar
     settings:
@@ -147,6 +150,28 @@ targets:
         PRODUCT_NAME: XTokenHubWidget
         CODE_SIGN_ENTITLEMENTS: Widget/XTokenHubWidget.entitlements
         SKIP_INSTALL: YES
+  # 小组件源码单独编进测试包:离屏量 fittingSize 验证三档排版预算
+  # (溢出在 macOS 是静默裁切,不能只靠肉眼看预览)
+  XTokenHubWidgetTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/Widget
+      - path: Widget
+        excludes:
+          - "*.entitlements"
+      - path: Shared
+      - path: App/Core/Models/HubModels.swift
+      - path: App/Core/Networking/APIClient.swift
+      - path: App/Utilities/TokenFormatter.swift
+      - path: App/Utilities/MoneyFormatter.swift
+      - path: App/Utilities/HubURL.swift
+      - path: App/Utilities/HubDate.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.xtokenhub.menubar.widget-tests
+        GENERATE_INFOPLIST_FILE: YES
+
 schemes:
   XTokenHubMenuBar:
     build:
@@ -159,6 +184,7 @@ schemes:
       config: Debug
       targets:
         - XTokenHubMenuBarTests
+        - XTokenHubWidgetTests
   XTokenHubWidget:
     build:
       targets:

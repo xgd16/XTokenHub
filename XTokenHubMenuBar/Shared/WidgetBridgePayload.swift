@@ -14,6 +14,8 @@ struct WidgetBridgePayload: Codable, Sendable {
     var costToday: CostForecast?
     var modelTop: [GroupStat]
     var channelBalances: [ChannelBalance]
+    /// 配置了峰谷时段价的价目行（为空时 Widget 不显示峰谷模块）。
+    var peakPrices: [ModelPrice]
     /// 计费展示设置：花费按这个币种/汇率换算后展示（与主 App 面板同口径）。
     var billingCurrency: String
     var billingRate: Double

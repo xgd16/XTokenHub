@@ -378,3 +378,64 @@ struct NoDataView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
+
+// MARK: - 峰谷状态行
+
+/// 峰谷状态单行：状态点 + 峰/谷 + 生效输入/输出价（每百万）+ 切换倒计时。
+/// Small/Medium 省略模型名，Large 展示（多模型附 +N）。
+/// 时段与倒计时一律按传入时刻计算（时间线在切换点有条目，到点自动翻状态）。
+struct PeakStatusRow: View {
+    let lead: XTokenHubEntry.PeakLead
+    let date: Date
+    var showsModel = false
+    var extraCount = 0
+
+    private var tint: Color {
+        lead.period == .peak ? .orange : .green
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(tint)
+                .frame(width: 5, height: 5)
+
+            Text(lead.period == .peak ? "峰" : "谷")
+                .font(WD.captionFont.weight(.semibold))
+                .foregroundStyle(tint)
+
+            if showsModel {
+                Text(lead.price.model)
+                    .font(WD.captionFont)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if extraCount > 0 {
+                    Text("+\(extraCount)")
+                        .font(WD.captionFont)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            Spacer(minLength: 4)
+
+            Text(ratesText)
+                .font(WD.valueFont.monospacedDigit())
+                .lineLimit(1)
+
+            if let next = lead.next {
+                Text("\(peakCountdown(from: date, to: next.at))后转\(next.to == .peak ? "峰" : "谷")")
+                    .font(WD.captionFont)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+        }
+        .frame(height: 13)
+    }
+
+    /// 生效输入/输出价（每百万，行自身币种）。
+    private var ratesText: String {
+        let rates = lead.price.effectiveRates(at: date)
+        return MoneyFormatter.formatPerMillion(perToken: rates.input, currency: lead.price.displayCurrency)
+            + "/" + MoneyFormatter.formatPerMillion(perToken: rates.output, currency: lead.price.displayCurrency)
+    }
+}

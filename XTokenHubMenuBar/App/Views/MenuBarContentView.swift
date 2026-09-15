@@ -19,6 +19,7 @@ struct MenuBarContentView: View {
                     VStack(alignment: .leading, spacing: 16) {
                         tiles
                         costCard
+                        peakCard
                         channelsCard
                         trendCard
                         modelCard
@@ -233,6 +234,25 @@ struct MenuBarContentView: View {
 
     private func basisLabel(_ basis: String) -> String {
         basis == "run_rate" ? "近 7 日均速" : "本周期线性"
+    }
+
+    // MARK: - 峰谷价目(配置了时段价的模型才显示)
+
+    /// 峰谷卡:每模型一行显示当前时段、生效费率与切换倒计时,无时段价模型时整卡隐藏。
+    /// 倒计时由 TimelineView 局部跳动(30s),不写 Store、不牵动面板其余内容。
+    @ViewBuilder
+    private var peakCard: some View {
+        if !store.peakPrices.isEmpty {
+            PanelSection(title: "峰谷价目") {
+                TimelineView(.periodic(from: .now, by: 30)) { context in
+                    VStack(spacing: 8) {
+                        ForEach(store.peakPrices) { price in
+                            PeakPriceRow(price: price, now: context.date)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private func confidenceLabel(_ confidence: String) -> String {
@@ -477,6 +497,87 @@ private struct CostRow: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - 峰谷价目行
+
+/// 峰谷卡单模型行:状态点 + 模型名 + 副行切换倒计时,右侧当前生效输入/输出价;
+/// help 悬浮展示双档费率与规则原文。纯文本行,不嵌玻璃磁贴。
+private struct PeakPriceRow: View {
+    let price: ModelPrice
+    let now: Date
+
+    var body: some View {
+        let rule = price.peakRule
+        let period = rule?.period(at: now) ?? .peak
+        let next = rule?.nextSwitch(after: now)
+        let rates = price.effectiveRates(at: now)
+        let tint: Color = period == .peak ? .orange : .green
+
+        HStack(spacing: 8) {
+            Circle()
+                .fill(tint)
+                .frame(width: 7, height: 7)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(price.model)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                if let next {
+                    Text("\(peakCountdown(from: now, to: next.at)) 后转\(next.to == .peak ? "高峰" : "空闲")")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else {
+                    // 无切换点:规则覆盖全周(如 1-7;00:00-23:59),展示规则本身
+                    Text("高峰时段 \(price.peakWindow)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(
+                    MoneyFormatter.formatPerMillion(perToken: rates.input, currency: price.displayCurrency)
+                        + "/" + MoneyFormatter.formatPerMillion(perToken: rates.output, currency: price.displayCurrency)
+                        + " ·M"
+                )
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .foregroundStyle(tint)
+                Text("\(period.label) · 输入/输出")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .help(helpText)
+    }
+
+    /// 悬浮明细:双档费率(空闲未配置时与高峰相同,如实展示)与规则原文。
+    private var helpText: String {
+        let peakIn = MoneyFormatter.formatPerMillion(perToken: price.inputCostPerToken, currency: price.displayCurrency)
+        let peakOut = MoneyFormatter.formatPerMillion(perToken: price.outputCostPerToken, currency: price.displayCurrency)
+        let offIn = MoneyFormatter.formatPerMillion(
+            perToken: price.offPeakInputCostPerToken > 0 ? price.offPeakInputCostPerToken : price.inputCostPerToken,
+            currency: price.displayCurrency
+        )
+        let offOut = MoneyFormatter.formatPerMillion(
+            perToken: price.offPeakOutputCostPerToken > 0 ? price.offPeakOutputCostPerToken : price.outputCostPerToken,
+            currency: price.displayCurrency
+        )
+        var lines = [
+            price.model,
+            "高峰 输入 \(peakIn)/M · 输出 \(peakOut)/M",
+            "空闲 输入 \(offIn)/M · 输出 \(offOut)/M",
+        ]
+        if let discount = price.offPeakDiscountPercent {
+            lines[2] += "(省 \(discount)%)"
+        }
+        lines.append("高峰时段(北京时间)\(price.peakWindow)")
+        lines.append("费率均为每百万 token,不含长上下文分档")
+        return lines.joined(separator: "\n")
     }
 }
 

@@ -21,8 +21,22 @@ struct XTokenHubProvider: AppIntentTimelineProvider {
 
     func timeline(for configuration: XTokenHubConfigurationIntent, in context: Context) async -> Timeline<XTokenHubEntry> {
         let entry = await makeEntry(for: configuration)
-        let next = Calendar.current.date(byAdding: .minute, value: 15, to: Date()) ?? Date().addingTimeInterval(900)
-        return Timeline(entries: [entry], policy: .after(next))
+
+        // 在峰谷切换时刻追加条目：Widget 到点自动翻状态，不必等 15 分钟兜底刷新。
+        // 只看主角模型（距下次切换最近），追加其后 2 个切换点，覆盖一个工作日的午休/收盘。
+        var entries = [entry]
+        if let lead = entry.peakLead(at: entry.date) {
+            var cursor = entry.date
+            for _ in 0..<2 {
+                guard let next = lead.rule.nextSwitch(after: cursor) else { break }
+                entries.append(XTokenHubEntry(date: next.at, snapshot: entry.snapshot))
+                cursor = next.at
+            }
+        }
+
+        let last = entries.last?.date ?? Date()
+        let next = Calendar.current.date(byAdding: .minute, value: 15, to: last) ?? last.addingTimeInterval(900)
+        return Timeline(entries: entries, policy: .after(next))
     }
 
     private func makeEntry(for configuration: XTokenHubConfigurationIntent) async -> XTokenHubEntry {

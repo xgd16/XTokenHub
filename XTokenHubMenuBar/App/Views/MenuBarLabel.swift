@@ -38,7 +38,25 @@ struct MenuBarLabel: View {
         if metrics.contains(.throughput) {
             parts.append("\(TokenFormatter.compactSpeed(store.tokensPerSec))/s")
         }
+        if metrics.contains(.peakStatus), let text = peakText {
+            parts.append(text)
+        }
         return parts
+    }
+
+    /// 峰谷状态(单字「峰/谷」):取最近切换的模型;无时段价模型时不显示该段。
+    private var peakText: String? {
+        let now = Date()
+        var best: (switchAt: Date, isPeak: Bool)?
+        for price in store.peakPrices {
+            guard let rule = price.peakRule else { continue }
+            let candidate = (switchAt: rule.nextSwitch(after: now)?.at ?? .distantFuture, isPeak: rule.isPeak(at: now))
+            if best == nil || candidate.switchAt < best!.switchAt {
+                best = candidate
+            }
+        }
+        guard let best else { return nil }
+        return best.isPeak ? "峰" : "谷"
     }
 
     private var cacheHitText: String {

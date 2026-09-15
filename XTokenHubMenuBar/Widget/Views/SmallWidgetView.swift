@@ -3,8 +3,11 @@ import WidgetKit
 
 /// Small (170×170，约 138pt 可用高) — 今日速览。
 ///
-/// 垂直预算：标题 13 + 主数字 38 + 迷你趋势 22 + 双指标 26 = 99pt，
-/// 余下约 39pt 由三个等分间隙吸收，避免出现两处大空洞。
+/// 垂直预算（离屏实测，见 Tests/Widget/WidgetLayoutTests）：
+/// 固定内容 115pt（标题 13 + 主数字 38 + 迷你趋势 22 + 双指标 26，含行距）；
+/// 配置了峰谷时段价的模型再多一行 13pt（合计 128pt）。
+/// 四处间隙是弹性的，下限取 2pt 而非 6pt —— 只在内容撑高时让位，
+/// 有富余时照常均分吸收余量，这样带峰谷行也不会被挤出边界（无峰谷时 131pt / 有峰谷时 136pt）。
 struct SmallWidgetView: View {
     let entry: XTokenHubEntry
 
@@ -17,7 +20,7 @@ struct SmallWidgetView: View {
                     trailing: entry.snapshot.timestamp.formatted(date: .omitted, time: .shortened)
                 )
 
-                Spacer(minLength: 6)
+                Spacer(minLength: 2)
 
                 // 主视觉：今日 Token
                 VStack(alignment: .leading, spacing: 1) {
@@ -32,12 +35,19 @@ struct SmallWidgetView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Spacer(minLength: 6)
+                Spacer(minLength: 2)
 
                 MiniTrendChart(values: entry.trendValues)
                     .frame(height: 22)
 
-                Spacer(minLength: 6)
+                Spacer(minLength: 2)
+
+                // 峰谷状态：有配置时段价的模型才出现（固定 13pt，见文件头垂直预算）
+                if let lead = entry.peakLead(at: entry.date) {
+                    PeakStatusRow(lead: lead, date: entry.date)
+                }
+
+                Spacer(minLength: 2)
 
                 HStack(spacing: 0) {
                     MetricStack(

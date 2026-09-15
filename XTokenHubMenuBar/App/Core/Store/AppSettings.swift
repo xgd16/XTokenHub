@@ -21,6 +21,7 @@ final class AppSettings {
         case cacheHit
         case costToday
         case throughput
+        case peakStatus
 
         var id: String { rawValue }
 
@@ -32,6 +33,7 @@ final class AppSettings {
             case .cacheHit: "缓存命中率"
             case .costToday: "今日花费"
             case .throughput: "实时速度"
+            case .peakStatus: "峰谷状态"
             }
         }
     }
@@ -43,6 +45,7 @@ final class AppSettings {
         static let metrics = "menuBarMetrics"
         static let legacyMode = "menuBarMode" // 旧版单选模式,迁移后废弃
         static let launchAtLogin = "launchAtLogin"
+        static let peakNotify = "peakNotifyEnabled"
     }
 
     /// 数据来源列表,至少保留一个(删空时回退默认)。
@@ -73,6 +76,21 @@ final class AppSettings {
     }
 
     private(set) var launchAtLoginError: String?
+
+    /// 峰谷切换通知(本地推送,主 App 常驻时生效;需系统通知授权)。
+    var peakNotifyEnabled: Bool {
+        didSet {
+            guard oldValue != peakNotifyEnabled else { return }
+            UserDefaults.standard.set(peakNotifyEnabled, forKey: Key.peakNotify)
+            onPeakNotifyChange?(peakNotifyEnabled)
+        }
+    }
+
+    /// 通知授权失败/被拒的展示文案(由 HubStore 回写,设置页展示)。
+    var peakNotifyError: String?
+
+    /// 开关翻转回调(AppDelegate 转给 HubStore:补授权并立即重排/撤销)。
+    var onPeakNotifyChange: ((Bool) -> Void)?
 
     /// 设置变更回调(数据来源变化需触发 HubStore 重连)。
     var onChange: (() -> Void)?
@@ -111,6 +129,7 @@ final class AppSettings {
         }
 
         launchAtLogin = d.bool(forKey: Key.launchAtLogin) && SMAppService.mainApp.status == .enabled
+        peakNotifyEnabled = d.bool(forKey: Key.peakNotify)
     }
 
     // MARK: - 数据来源操作

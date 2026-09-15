@@ -60,8 +60,9 @@ func (r *ModelPriceRepo) List(ctx context.Context) ([]model.ModelPrice, error) {
 }
 
 // ListPaged 分页查询。usedOnly 时只返回 request_logs 里出现过的模型，
-// 避免把整张上游价格表（数千条）全量推给前端。
-func (r *ModelPriceRepo) ListPaged(ctx context.Context, q string, usedOnly bool, offset, limit int) ([]model.ModelPrice, int64, error) {
+// peakOnly 时只返回配置了峰谷时段价（peak_window 非空）的模型；
+// 这两个过滤都是为了避免把整张上游价格表（数千条）全量推给前端。
+func (r *ModelPriceRepo) ListPaged(ctx context.Context, q string, usedOnly, peakOnly bool, offset, limit int) ([]model.ModelPrice, int64, error) {
 	query := r.db.WithContext(ctx).Model(&model.ModelPrice{})
 	if s := strings.TrimSpace(q); s != "" {
 		query = query.Where(`model LIKE ? ESCAPE '\'`, likePattern(s))
@@ -69,6 +70,10 @@ func (r *ModelPriceRepo) ListPaged(ctx context.Context, q string, usedOnly bool,
 	if usedOnly {
 		query = query.Where("model IN (?)",
 			r.db.Model(&model.RequestLog{}).Select("DISTINCT model"))
+	}
+	if peakOnly {
+		// COALESCE 兜住迁移产生的 NULL（语义同空串 = 未配置时段价）
+		query = query.Where("COALESCE(peak_window, '') <> ''")
 	}
 
 	var total int64

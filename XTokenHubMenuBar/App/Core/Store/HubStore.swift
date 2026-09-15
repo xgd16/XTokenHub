@@ -46,6 +46,8 @@ final class HubStore {
     private(set) var channels: [Channel] = []
     /// 渠道余额,按 channel_id 索引;WS 推送直接合并。
     private(set) var balances: [Int64: ChannelBalance] = [:]
+    /// 配置了峰谷时段价的价目行(为空时弹出层/小组件/通知都不出现峰谷模块)。
+    private(set) var peakPrices: [ModelPrice] = []
     /// 今日花费与预测(随快速刷新走)。
     private(set) var costToday: CostForecast?
     /// 本月花费与预测(随慢速刷新走)。
@@ -72,6 +74,10 @@ final class HubStore {
     private var statsRefreshTask: Task<Void, Never>?
     private var channelsRefreshTask: Task<Void, Never>?
     private var periodicTask: Task<Void, Never>?
+    /// 峰谷切换通知调度器(开关开启时随价目刷新重排)。
+    private let peakNotifier = PeakNotifier()
+    /// 价目低频重拉的轮询计数(每 10 分钟一次)。
+    private var peakTick = 0
     /// 把当前数据交给 Widget 的本机回环端点。
     private let widgetBridge = WidgetBridgeServer()
     private let maxLiveRows = 50
@@ -92,6 +98,12 @@ final class HubStore {
                 await self.fetchCallers()
                 // 余额服务端有 5 分钟 TTL,轮询基本命中缓存
                 await self.fetchBalances()
+                // 价目变更不频繁,10 分钟重拉一次足以覆盖设置页的编辑
+                self.peakTick += 1
+                if self.peakTick >= 10 {
+                    self.peakTick = 0
+                    await self.fetchPeakPrices()
+                }
             }
         }
     }
@@ -139,6 +151,7 @@ final class HubStore {
         costToday = nil
         costMonth = nil
         billing = nil
+        peakPrices = []
 
         // 数据来源切换：让 Widget 重新取数
         WidgetDataProvider.reloadWidgets()
@@ -310,6 +323,26 @@ final class HubStore {
         costMonth = try? await api.costForecast(period: "month")
     }
 
+    /// 峰谷价目:只保留规则可解析的行;失败静默(旧后端无此数据,不拖垮核心统计)。
+    private func fetchPeakPrices() async {
+        guard let api else { return }
+        guard let list = try? await api.peakPrices() else { return }
+        peakPrices = list.filter { $0.peakRule != nil }
+        if settings?.peakNotifyEnabled == true {
+            await peakNotifier.reschedule(peakPrices)
+        }
+    }
+
+    /// 设置页「峰谷切换通知」开关翻转:开启时补授权并立即重排,关闭时撤销。
+    func handlePeakNotifyChange(_ enabled: Bool) async {
+        if enabled {
+            settings?.peakNotifyError = await peakNotifier.requestAuthorizationIfNeeded()
+            await peakNotifier.reschedule(peakPrices)
+        } else {
+            await peakNotifier.cancelAll()
+        }
+    }
+
     private func refreshAll() async {
         guard let api else { return }
         // 计费设置先行：花费的展示币种/汇率依赖它，也让随后的 Widget 同步带上正确币种
@@ -328,6 +361,7 @@ final class HubStore {
         await fetchChannels()
         await fetchCostMonth()
         await fetchBalances()
+        await fetchPeakPrices()
         // 慢速数据（余额等）齐了再同步一次，避免 Widget 拿到残缺载荷
         syncWidgetData()
     }
@@ -348,6 +382,7 @@ final class HubStore {
             costToday: costToday,
             modelTop: modelTop,
             channelBalances: Array(balances.values),
+            peakPrices: peakPrices,
             billingCurrency: billing?.displayCurrency ?? "USD",
             billingRate: billing?.usdRate ?? 0,
             generatedAt: Date()

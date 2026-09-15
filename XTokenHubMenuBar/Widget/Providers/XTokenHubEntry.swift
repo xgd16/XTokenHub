@@ -10,6 +10,7 @@ struct XTokenHubEntry: TimelineEntry {
     var costToday: CostForecast? { snapshot.costToday }
     var modelTop: [GroupStat] { snapshot.modelTop }
     var channelBalances: [ChannelBalance] { snapshot.channelBalances }
+    var peakPrices: [ModelPrice] { snapshot.peakPrices }
     var trend: [TrendPoint] { snapshot.trend }
     var sourceName: String { snapshot.sourceName }
 
@@ -36,6 +37,48 @@ struct XTokenHubEntry: TimelineEntry {
 
     static func noData() -> XTokenHubEntry {
         XTokenHubEntry(date: Date(), snapshot: .empty)
+    }
+}
+
+// MARK: - 峰谷主角
+
+extension XTokenHubEntry {
+    /// 峰谷主角：距下次切换最近的模型（多个模型时取最可操作的那个，与 Web 卡片一致）。
+    struct PeakLead {
+        let price: ModelPrice
+        let rule: PeakWindow
+        let period: PricePeriod
+        let next: (at: Date, to: PricePeriod)?
+    }
+
+    /// 判定一律以传入时刻为准（通常是 entry.date：时间线在切换点有条目，到点重算即翻状态）。
+    func peakLead(at date: Date) -> PeakLead? {
+        var best: PeakLead?
+        for price in snapshot.peakPrices {
+            guard let rule = price.peakRule else { continue }
+            let candidate = PeakLead(
+                price: price,
+                rule: rule,
+                period: rule.period(at: date),
+                next: rule.nextSwitch(after: date)
+            )
+            guard let current = best else {
+                best = candidate
+                continue
+            }
+            // 无切换点（规则覆盖全周、恒为高峰）的模型排在有切换点的之后
+            switch (candidate.next, current.next) {
+            case (nil, _):
+                continue
+            case (_?, nil):
+                best = candidate
+            case (let c?, let b?) where c.at < b.at:
+                best = candidate
+            default:
+                break
+            }
+        }
+        return best
     }
 }
 
@@ -72,6 +115,18 @@ enum WidgetSnapshotFactory {
             GroupStat(name: "deepseek-chat", requests: 132, totalTokens: 500_000, cachedTokens: 100_000, cacheRate: 0.20, avgMS: 200),
         ],
         channelBalances: [],
+        peakPrices: [
+            ModelPrice(
+                id: 1,
+                model: "deepseek-flash",
+                currency: "CNY",
+                inputCostPerToken: 2.0 / 1_000_000,
+                outputCostPerToken: 8.0 / 1_000_000,
+                peakWindow: "1-5;09:00-12:00,14:00-18:00",
+                offPeakInputCostPerToken: 1.0 / 1_000_000,
+                offPeakOutputCostPerToken: 4.0 / 1_000_000
+            )
+        ],
         trend: WidgetSnapshotFactory.sampleTrend,
         sourceName: "XTokenHub",
         billingCurrency: "CNY",

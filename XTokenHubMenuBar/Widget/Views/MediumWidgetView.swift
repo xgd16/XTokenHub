@@ -48,6 +48,12 @@ struct MediumWidgetView: View {
                 unitStyle: .system(size: 12, weight: .medium)
             )
 
+            // 峰谷状态：有配置时段价的模型才出现（固定 13pt，趋势图最低 34pt 仍放得下）
+            if let lead = entry.peakLead(at: entry.date) {
+                PeakStatusRow(lead: lead, date: entry.date)
+                    .padding(.top, 2)
+            }
+
             Spacer(minLength: 4)
 
             MiniTrendChart(values: entry.trendValues)

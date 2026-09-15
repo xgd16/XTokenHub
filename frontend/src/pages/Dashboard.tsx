@@ -8,6 +8,7 @@ import LogDetail, { DetailRows } from '../components/LogDetail'
 import TokenHeatmap from '../components/TokenHeatmap'
 import ModelTrendChart from '../components/ModelTrendChart'
 import ModelDonut from '../components/ModelDonut'
+import PeakPriceCard from '../components/PeakPriceCard'
 import { AnimatedNumber } from '../components/AnimatedNumber'
 import { Reveal } from '../utils/motion'
 import {
@@ -1056,6 +1057,10 @@ export default function Dashboard() {
         </Col>
         <Col xs={12} md={8} lg={4}>
           <StatCard label="最长连续天数" value={lifetime ? lifetime.max_streak : null} format={streak} sub="历史最长连击" />
+        </Col>
+        {/* 峰谷价目：仅当有模型配置了时段价时占据此格，否则整格留空 */}
+        <Col xs={12} md={8} lg={4}>
+          <PeakPriceCard />
         </Col>
       </Row>
 

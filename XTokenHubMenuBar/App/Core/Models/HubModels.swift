@@ -353,3 +353,115 @@ struct ChannelBalancePayload: Decodable, Equatable, Sendable {
         case channelName = "channel_name"
     }
 }
+
+// MARK: - 价目(与 internal/model/model_price.go 对齐)
+
+/// GET /api/v1/settings/prices?peak_only=1 行数据(峰谷模块用)。
+///
+/// 只声明峰谷展示所需字段,其余键(长上下文 Above 分档等)自动忽略。
+/// 费率为该行币种下的单 token 金额,与公开价格表口径一致;展示时乘回每百万。
+struct ModelPrice: Codable, Equatable, Identifiable, Sendable {
+    var id: Int64
+    var model: String
+    /// USD | CNY(空/未知按 USD 处理,与后端 CurrencyOrDefault 一致)。
+    var currency: String
+    var inputCostPerToken: Double
+    var outputCostPerToken: Double
+    var cacheReadCostPerToken: Double
+    var cacheWriteCostPerToken: Double
+    /// 高峰时段规则原文(空 = 未配置;解析失败按未配置处理)。
+    var peakWindow: String
+    var offPeakInputCostPerToken: Double
+    var offPeakOutputCostPerToken: Double
+    var offPeakCacheReadCostPerToken: Double
+    var offPeakCacheWriteCostPerToken: Double
+
+    enum CodingKeys: String, CodingKey {
+        case id, model, currency
+        case inputCostPerToken = "input_cost_per_token"
+        case outputCostPerToken = "output_cost_per_token"
+        case cacheReadCostPerToken = "cache_read_cost_per_token"
+        case cacheWriteCostPerToken = "cache_write_cost_per_token"
+        case peakWindow = "peak_window"
+        case offPeakInputCostPerToken = "off_peak_input_cost_per_token"
+        case offPeakOutputCostPerToken = "off_peak_output_cost_per_token"
+        case offPeakCacheReadCostPerToken = "off_peak_cache_read_cost_per_token"
+        case offPeakCacheWriteCostPerToken = "off_peak_cache_write_cost_per_token"
+    }
+
+    init(
+        id: Int64,
+        model: String,
+        currency: String = "USD",
+        inputCostPerToken: Double,
+        outputCostPerToken: Double,
+        cacheReadCostPerToken: Double = 0,
+        cacheWriteCostPerToken: Double = 0,
+        peakWindow: String = "",
+        offPeakInputCostPerToken: Double = 0,
+        offPeakOutputCostPerToken: Double = 0,
+        offPeakCacheReadCostPerToken: Double = 0,
+        offPeakCacheWriteCostPerToken: Double = 0
+    ) {
+        self.id = id
+        self.model = model
+        self.currency = currency
+        self.inputCostPerToken = inputCostPerToken
+        self.outputCostPerToken = outputCostPerToken
+        self.cacheReadCostPerToken = cacheReadCostPerToken
+        self.cacheWriteCostPerToken = cacheWriteCostPerToken
+        self.peakWindow = peakWindow
+        self.offPeakInputCostPerToken = offPeakInputCostPerToken
+        self.offPeakOutputCostPerToken = offPeakOutputCostPerToken
+        self.offPeakCacheReadCostPerToken = offPeakCacheReadCostPerToken
+        self.offPeakCacheWriteCostPerToken = offPeakCacheWriteCostPerToken
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int64.self, forKey: .id)
+        model = try c.decode(String.self, forKey: .model)
+        currency = try c.decodeIfPresent(String.self, forKey: .currency) ?? "USD"
+        inputCostPerToken = try c.decodeIfPresent(Double.self, forKey: .inputCostPerToken) ?? 0
+        outputCostPerToken = try c.decodeIfPresent(Double.self, forKey: .outputCostPerToken) ?? 0
+        cacheReadCostPerToken = try c.decodeIfPresent(Double.self, forKey: .cacheReadCostPerToken) ?? 0
+        cacheWriteCostPerToken = try c.decodeIfPresent(Double.self, forKey: .cacheWriteCostPerToken) ?? 0
+        peakWindow = try c.decodeIfPresent(String.self, forKey: .peakWindow) ?? ""
+        offPeakInputCostPerToken = try c.decodeIfPresent(Double.self, forKey: .offPeakInputCostPerToken) ?? 0
+        offPeakOutputCostPerToken = try c.decodeIfPresent(Double.self, forKey: .offPeakOutputCostPerToken) ?? 0
+        offPeakCacheReadCostPerToken = try c.decodeIfPresent(Double.self, forKey: .offPeakCacheReadCostPerToken) ?? 0
+        offPeakCacheWriteCostPerToken = try c.decodeIfPresent(Double.self, forKey: .offPeakCacheWriteCostPerToken) ?? 0
+    }
+
+    /// 生效币种。
+    var displayCurrency: String { currency == "CNY" ? "CNY" : "USD" }
+
+    /// 解析后的高峰规则;空/非法返回 nil(按未配置处理,展示层直接跳过)。
+    var peakRule: PeakWindow? { PeakWindow(peakWindow) }
+
+    /// at 时刻生效费率(原币种/token)。口径镜像后端 Rates 的时段与缓存回退;
+    /// 展示场景不含长上下文 Above 分档。
+    func effectiveRates(at date: Date) -> (input: Double, output: Double, cacheRead: Double, cacheWrite: Double) {
+        var input = inputCostPerToken
+        var output = outputCostPerToken
+        var read = cacheReadCostPerToken
+        var write = cacheWriteCostPerToken
+        if let rule = peakRule, !rule.isPeak(at: date) {
+            if offPeakInputCostPerToken > 0 { input = offPeakInputCostPerToken }
+            if offPeakOutputCostPerToken > 0 { output = offPeakOutputCostPerToken }
+            read = offPeakCacheReadCostPerToken
+            write = offPeakCacheWriteCostPerToken
+        }
+        if read <= 0 { read = input }
+        if write <= 0 { write = input }
+        return (input, output, read, write)
+    }
+
+    /// 空闲相对高峰的输入折扣百分比;无优惠返回 nil。
+    var offPeakDiscountPercent: Int? {
+        guard inputCostPerToken > 0 else { return nil }
+        let off = offPeakInputCostPerToken > 0 ? offPeakInputCostPerToken : inputCostPerToken
+        guard off < inputCostPerToken else { return nil }
+        return Int(((1 - off / inputCostPerToken) * 100).rounded())
+    }
+}

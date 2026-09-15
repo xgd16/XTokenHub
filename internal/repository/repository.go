@@ -173,8 +173,9 @@ type ModelPriceRepository interface {
 	// GetByModel 按模型名查价格，不存在返回 gorm.ErrRecordNotFound。
 	GetByModel(ctx context.Context, name string) (*model.ModelPrice, error)
 	List(ctx context.Context) ([]model.ModelPrice, error)
-	// ListPaged 分页查询，q 为模型名模糊匹配（空 = 不限），usedOnly 只返回有用量的模型。
-	ListPaged(ctx context.Context, q string, usedOnly bool, offset, limit int) ([]model.ModelPrice, int64, error)
+	// ListPaged 分页查询，q 为模型名模糊匹配（空 = 不限），usedOnly 只返回有用量的模型，
+	// peakOnly 只返回配置了峰谷时段价的模型（仪表盘峰谷模块用，避免大表翻页漏行）。
+	ListPaged(ctx context.Context, q string, usedOnly, peakOnly bool, offset, limit int) ([]model.ModelPrice, int64, error)
 	// ReplaceSynced 整体替换同步来源的价格（事务内先删 source=synced 再批量写入），
 	// 手工配置（source=manual）的行始终保留。返回写入行数与跳过的同名手工行数。
 	ReplaceSynced(ctx context.Context, prices []model.ModelPrice) (int, int, error)

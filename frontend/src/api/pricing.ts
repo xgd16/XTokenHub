@@ -88,7 +88,7 @@ export type PriceInput = Omit<
 >
 
 export const pricingApi = {
-  listPrices: (params: { q?: string; used_only?: boolean; page?: number; per_page?: number }) =>
+  listPrices: (params: { q?: string; used_only?: boolean; peak_only?: boolean; page?: number; per_page?: number }) =>
     request<PriceListResponse>({ url: '/api/v1/settings/prices', method: 'GET', params }),
   createPrice: (data: Partial<PriceInput>) =>
     request<ModelPrice>({ url: '/api/v1/settings/prices', method: 'POST', data }),

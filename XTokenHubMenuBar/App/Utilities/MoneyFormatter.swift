@@ -73,4 +73,17 @@ enum MoneyFormatter {
         guard total.isFinite else { return sym + "—" }
         return sym + String(format: "%.2f", total)
     }
+
+    /// 价目行费率展示:每百万 token、行自身币种(不做汇率换算,口径同 Web formatPricePerMillion)。
+    /// 零/无效 → "—"。
+    static func formatPerMillion(perToken: Double, currency: String?) -> String {
+        guard perToken.isFinite, perToken > 0 else { return "—" }
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.locale = Locale(identifier: "en_US")
+        formatter.usesGroupingSeparator = true
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = 4
+        return symbol(for: currency) + (formatter.string(from: NSNumber(value: perToken * 1_000_000)) ?? "—")
+    }
 }

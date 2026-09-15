@@ -61,12 +61,18 @@ struct SettingsView: View {
             } header: {
                 Text("菜单栏显示")
             } footer: {
-                Text("自由勾选要显示的指标,顺序固定为:图标 · 请求数 · Token · 命中率 · 花费 · 速度;全部取消时仅显示图标。")
+                Text("自由勾选要显示的指标,顺序固定为:图标 · 请求数 · Token · 命中率 · 花费 · 速度 · 峰谷;全部取消时仅显示图标。峰谷取最近切换的模型,显示「峰」或「谷」。")
             }
 
-            Section("通用") {
+            Section {
                 Toggle("登录时自动启动", isOn: $settings.launchAtLogin)
                 if let err = settings.launchAtLoginError {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+                Toggle("峰谷切换通知", isOn: $settings.peakNotifyEnabled)
+                if let err = settings.peakNotifyError {
                     Text(err)
                         .font(.caption)
                         .foregroundStyle(.red)
@@ -75,6 +81,10 @@ struct SettingsView: View {
                     Text("1.2.0")
                         .foregroundStyle(.secondary)
                 }
+            } header: {
+                Text("通用")
+            } footer: {
+                Text("峰谷通知按模型提醒转入高峰/空闲的时刻,需在系统弹窗中允许通知。")
             }
         }
         .formStyle(.grouped)

@@ -24,12 +24,13 @@ func NewPricingHandler(svc *service.CostService) *PricingHandler {
 	return &PricingHandler{svc: svc}
 }
 
-// ListPrices GET /api/v1/settings/prices?q=&used_only=&page=&per_page=
+// ListPrices GET /api/v1/settings/prices?q=&used_only=&peak_only=&page=&per_page=
 // 响应同时带上同步状态，避免设置页多打一次请求。
 func (h *PricingHandler) ListPrices(c *gin.Context) {
 	p := pagination.FromGin(c)
 	usedOnly := c.Query("used_only") == "1" || c.Query("used_only") == "true"
-	items, total, err := h.svc.ListPrices(c.Request.Context(), c.Query("q"), usedOnly, p.Offset, p.Limit)
+	peakOnly := c.Query("peak_only") == "1" || c.Query("peak_only") == "true"
+	items, total, err := h.svc.ListPrices(c.Request.Context(), c.Query("q"), usedOnly, peakOnly, p.Offset, p.Limit)
 	if err != nil {
 		resp.Fail(c, err)
 		return

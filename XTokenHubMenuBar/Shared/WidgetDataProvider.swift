@@ -25,6 +25,7 @@ enum WidgetDataProvider {
         static let costToday = "widget_cache_cost_today"
         static let modelTop = "widget_cache_model_top"
         static let channelBalances = "widget_cache_channel_balances"
+        static let peakPrices = "widget_cache_peak_prices"
         static let trend = "widget_cache_trend"
         static let sourceName = "widget_cache_source_name"
         static let billingCurrency = "widget_cache_billing_currency"
@@ -44,6 +45,8 @@ enum WidgetDataProvider {
         var costToday: CostForecast?
         var modelTop: [GroupStat]
         var channelBalances: [ChannelBalance]
+        /// 配置了峰谷时段价的价目行（为空时 Widget 不显示峰谷模块）。
+        var peakPrices: [ModelPrice]
         /// 近 24 小时按小时分桶的趋势。
         var trend: [TrendPoint]
         var sourceName: String
@@ -75,6 +78,7 @@ enum WidgetDataProvider {
             costToday: nil,
             modelTop: [],
             channelBalances: [],
+            peakPrices: [],
             trend: [],
             sourceName: WidgetDataProvider.defaultSourceName,
             billingCurrency: "USD",
@@ -142,6 +146,7 @@ enum WidgetDataProvider {
             costToday: payload.costToday,
             modelTop: payload.modelTop,
             channelBalances: payload.channelBalances,
+            peakPrices: payload.peakPrices,
             trend: [],
             sourceName: payload.sourceName,
             billingCurrency: payload.billingCurrency,
@@ -182,6 +187,7 @@ enum WidgetDataProvider {
                 costToday: cost,
                 modelTop: Array(models.prefix(5)),
                 channelBalances: [],
+                peakPrices: [],
                 trend: trend,
                 sourceName: displayName(for: url),
                 billingCurrency: billing?.displayCurrency ?? "USD",
@@ -189,6 +195,11 @@ enum WidgetDataProvider {
                 timestamp: Date(),
                 source: .network
             )
+
+            // 峰谷价目（可选增强，旧后端缺失时不拖垮主数据；只保留规则可解析的行）
+            if let peaks = try? await api.peakPrices() {
+                snapshot.peakPrices = peaks.filter { $0.peakRule != nil }
+            }
 
             // 余额接口较慢且非核心，失败不影响主数据
             if let balances = try? await api.channelBalances() {
@@ -211,7 +222,7 @@ enum WidgetDataProvider {
     // MARK: - 缓存
 
     static func clearCache() {
-        [Keys.summary, Keys.costToday, Keys.modelTop, Keys.channelBalances,
+        [Keys.summary, Keys.costToday, Keys.modelTop, Keys.channelBalances, Keys.peakPrices,
          Keys.trend, Keys.sourceName, Keys.billingCurrency, Keys.billingRate,
          Keys.timestamp].forEach { defaults.removeObject(forKey: $0) }
     }
@@ -230,6 +241,8 @@ enum WidgetDataProvider {
                 .flatMap { try? decoder.decode([GroupStat].self, from: $0) } ?? [],
             channelBalances: defaults.data(forKey: Keys.channelBalances)
                 .flatMap { try? decoder.decode([ChannelBalance].self, from: $0) } ?? [],
+            peakPrices: defaults.data(forKey: Keys.peakPrices)
+                .flatMap { try? decoder.decode([ModelPrice].self, from: $0) } ?? [],
             trend: defaults.data(forKey: Keys.trend)
                 .flatMap { try? decoder.decode([TrendPoint].self, from: $0) } ?? [],
             sourceName: defaults.string(forKey: Keys.sourceName) ?? defaultSourceName,
@@ -258,6 +271,9 @@ enum WidgetDataProvider {
         }
         if !snapshot.channelBalances.isEmpty, let data = try? encoder.encode(snapshot.channelBalances) {
             defaults.set(data, forKey: Keys.channelBalances)
+        }
+        if !snapshot.peakPrices.isEmpty, let data = try? encoder.encode(snapshot.peakPrices) {
+            defaults.set(data, forKey: Keys.peakPrices)
         }
         if !snapshot.trend.isEmpty, let data = try? encoder.encode(snapshot.trend) {
             defaults.set(data, forKey: Keys.trend)

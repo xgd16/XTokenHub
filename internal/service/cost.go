@@ -600,15 +600,16 @@ type PriceInput struct {
 	CacheWriteAbovePerToken float64 `json:"cache_write_cost_above_per_token"`
 }
 
-// ListPrices 分页查询价格表（q 模糊匹配模型名，usedOnly 只返回有用量的模型）。
-func (s *CostService) ListPrices(ctx context.Context, q string, usedOnly bool, offset, limit int) ([]model.ModelPrice, int64, error) {
+// ListPrices 分页查询价格表（q 模糊匹配模型名，usedOnly 只返回有用量的模型，
+// peakOnly 只返回配置了峰谷时段价的模型）。
+func (s *CostService) ListPrices(ctx context.Context, q string, usedOnly, peakOnly bool, offset, limit int) ([]model.ModelPrice, int64, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
 	if offset < 0 {
 		offset = 0
 	}
-	return s.prices.ListPaged(ctx, q, usedOnly, offset, limit)
+	return s.prices.ListPaged(ctx, q, usedOnly, peakOnly, offset, limit)
 }
 
 // CreatePrice 手工新增价格（source=manual，同步不覆盖）。
