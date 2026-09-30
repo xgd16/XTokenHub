@@ -30,6 +30,7 @@ func NewMemoryDB(t *testing.T) *gorm.DB {
 	if err := db.AutoMigrate(
 		&model.Channel{}, &model.APIKey{}, &model.RequestLog{}, &model.CustomModel{},
 		&model.SessionHeaderConfig{}, &model.ModelPrice{}, &model.BillingSettings{},
+		&model.ReasoningRewrite{},
 	); err != nil {
 		t.Fatalf("迁移: %v", err)
 	}

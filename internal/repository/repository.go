@@ -190,6 +190,19 @@ type BillingSettingsRepository interface {
 	Save(ctx context.Context, s *model.BillingSettings) error
 }
 
+// ReasoningRewriteRepository 思维档位改写规则数据访问接口。
+type ReasoningRewriteRepository interface {
+	Create(ctx context.Context, rule *model.ReasoningRewrite) error
+	Update(ctx context.Context, rule *model.ReasoningRewrite) error
+	Delete(ctx context.Context, id int64) error
+	GetByID(ctx context.Context, id int64) (*model.ReasoningRewrite, error)
+	// GetByModel 按上游模型名精确查询，不存在返回 gorm.ErrRecordNotFound。
+	GetByModel(ctx context.Context, name string) (*model.ReasoningRewrite, error)
+	List(ctx context.Context) ([]model.ReasoningRewrite, error)
+	// ListPaged 分页查询，q 为模型名模糊匹配（空 = 不限）。
+	ListPaged(ctx context.Context, q string, offset, limit int) ([]model.ReasoningRewrite, int64, error)
+}
+
 // ModelWindow 模型在单个时间窗内的使用量。
 type ModelWindow struct {
 	Requests    int64 `json:"requests"`

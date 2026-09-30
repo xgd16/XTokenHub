@@ -65,6 +65,9 @@ type ReqParams struct {
 	Stream      bool       `json:"-"`
 	Tools       []ToolDef  `json:"-"`
 	ToolChoice  ToolChoice `json:"-"`
+	// Reasoning 归一化后的思维档位串（如 low/high/max，空 = 未携带）。
+	// 仅 chat 上游回写为 reasoning_effort，再由出站改写引擎翻译成 thinking 开关。
+	Reasoning string `json:"-"`
 }
 
 // FullText 会话全部文本（用于估算输入 token）。
@@ -189,6 +192,7 @@ func parseOpenAIChatRequest(body []byte) (Conversation, ReqParams, error) {
 			} `json:"function"`
 		} `json:"tools"`
 		ToolChoice json.RawMessage `json:"tool_choice"`
+		ReasoningEffort string     `json:"reasoning_effort"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return Conversation{}, ReqParams{}, fmt.Errorf("解析 openai 请求: %w", err)
@@ -234,6 +238,7 @@ func parseOpenAIChatRequest(body []byte) (Conversation, ReqParams, error) {
 		Model: req.Model, MaxTokens: deref(req.MaxTokens), Temperature: req.Temperature,
 		TopP: req.TopP, Stop: rawToStrings(req.Stop), Stream: req.Stream,
 		ToolChoice: parseToolChoice(req.ToolChoice),
+		Reasoning:  model.NormalizeTier(req.ReasoningEffort),
 	}
 	for _, t := range req.Tools {
 		if t.Function.Name == "" {
@@ -309,6 +314,9 @@ func parseResponsesRequest(body []byte) (Conversation, ReqParams, error) {
 			Parameters  json.RawMessage `json:"parameters"`
 		} `json:"tools"`
 		ToolChoice json.RawMessage `json:"tool_choice"`
+		Reasoning  *struct {
+			Effort string `json:"effort"`
+		} `json:"reasoning"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return Conversation{}, ReqParams{}, fmt.Errorf("解析 responses 请求: %w", err)
@@ -365,6 +373,9 @@ func parseResponsesRequest(body []byte) (Conversation, ReqParams, error) {
 	}
 	params := ReqParams{Model: req.Model, MaxTokens: deref(req.MaxOutputTokens), Temperature: req.Temperature, TopP: req.TopP, Stream: req.Stream,
 		ToolChoice: parseToolChoice(req.ToolChoice)}
+	if req.Reasoning != nil {
+		params.Reasoning = model.NormalizeTier(req.Reasoning.Effort)
+	}
 	for _, t := range req.Tools {
 		// responses 工具定义为扁平形态；web_search/file_search 等内置工具不映射
 		if t.Name == "" || (t.Type != "" && t.Type != "function") {
@@ -397,6 +408,9 @@ func parseAnthropicRequest(body []byte) (Conversation, ReqParams, error) {
 			Type string `json:"type"`
 			Name string `json:"name"`
 		} `json:"tool_choice"`
+		Thinking *struct {
+			Type string `json:"type"`
+		} `json:"thinking"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return Conversation{}, ReqParams{}, fmt.Errorf("解析 anthropic 请求: %w", err)
@@ -466,6 +480,11 @@ func parseAnthropicRequest(body []byte) (Conversation, ReqParams, error) {
 		}
 	}
 	params := ReqParams{Model: req.Model, MaxTokens: req.MaxTokens, Temperature: req.Temperature, TopP: req.TopP, Stop: req.Stop, Stream: req.Stream}
+	// thinking.type 伪档位（客户端把档位串塞进 type）按档位处理；
+	// 标准 enabled/disabled 是真实 thinking 配置，不在此转换（透传路径原样保留）。
+	if req.Thinking != nil && model.IsReasoningTier(req.Thinking.Type) {
+		params.Reasoning = model.NormalizeTier(req.Thinking.Type)
+	}
 	for _, t := range req.Tools {
 		if t.Name == "" {
 			continue
@@ -597,6 +616,11 @@ func writeOpenAIChatUpstream(conv Conversation, params ReqParams, upstreamModel 
 		} else {
 			out["stop"] = params.Stop
 		}
+	}
+	// 思维档位回写：档位能力上游（OpenAI/DeepSeek 等）原生可用；
+	// 仅认 thinking 开关的上游由网关出站改写引擎按规则翻译（见 reasoning.go）。
+	if params.Reasoning != "" {
+		out["reasoning_effort"] = params.Reasoning
 	}
 	if params.Stream {
 		out["stream"] = true

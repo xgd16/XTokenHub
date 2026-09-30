@@ -37,6 +37,12 @@ type PricingSource interface {
 	Cost(l *model.RequestLog, style model.UsageStyle) float64
 }
 
+// RewriteSource 思维档位改写规则来源（由 service.ReasoningRewriteService 实现；nil = 不改写）。
+type RewriteSource interface {
+	// RewriteFor 按上游模型名取改写规则，不存在返回 ok=false。
+	RewriteFor(ctx context.Context, upModel string) (model.ReasoningRewrite, bool)
+}
+
 // Request 一次网关请求的上下文。
 type Request struct {
 	Protocol     model.Protocol         // 入站协议
@@ -61,6 +67,7 @@ type Executor struct {
 	maxRespBytes int64 // 非流式响应读取上限
 	throughput   *Throughput
 	pricing      PricingSource // 计价数据源（nil = 不计价）
+	rewrites     RewriteSource // 思维档位改写规则（nil = 不改写）
 	reqSeq       atomic.Int64  // 进程内请求序号（进行中/完成事件配对）
 }
 
@@ -83,6 +90,9 @@ func (e *Executor) SetCustomModels(src CustomModelSource) { e.customs = src }
 
 // SetPricing 注入计价数据源（nil 表示不计算费用）。
 func (e *Executor) SetPricing(src PricingSource) { e.pricing = src }
+
+// SetRewrites 注入思维档位改写规则来源（nil 表示不改写出站体）。
+func (e *Executor) SetRewrites(src RewriteSource) { e.rewrites = src }
 
 // AvailableModels 聚合全部启用渠道显式配置的模型与启用的自定义模型 ID（去重、字典序排序），
 // 供 GET /v1/models 对外暴露能力清单。渠道 models 为空的视为「支持全部」，无法枚举，不产生条目。
@@ -263,6 +273,19 @@ func upstreamModelOf(cand Candidate, req *Request) string {
 	return req.Params.Model
 }
 
+// rewriteUpstreamBody 按上游模型的改写规则把出站体中的思维档位翻译成 thinking 开关
+// （仅认开/关的上游如 MiMo 需要；无规则或未启用时原样返回）。
+func (e *Executor) rewriteUpstreamBody(ctx context.Context, body []byte, up model.Protocol, upModel string) []byte {
+	if e.rewrites == nil || len(body) == 0 {
+		return body
+	}
+	rule, ok := e.rewrites.RewriteFor(ctx, upModel)
+	if !ok {
+		return body
+	}
+	return provider.ApplyReasoningRewrite(body, up, rule)
+}
+
 // withModel 将请求体顶层 "model" 字段替换为实际上游模型（自定义模型组路由用）。
 // 解析失败时原样返回，由上游报错触发 failover。
 func withModel(body []byte, name string) []byte {
@@ -300,7 +323,7 @@ func (e *Executor) handleNonStream(ctx context.Context, w http.ResponseWriter, r
 	var err error
 	if cand.Mode == model.ForwardNativePassthrough {
 		var status int
-		upstreamBody, status, err = e.sendNonStream(ctx, ch, up, withModel(req.Body, upModel), req.ClientHeader)
+		upstreamBody, status, err = e.sendNonStream(ctx, ch, up, e.rewriteUpstreamBody(ctx, withModel(req.Body, upModel), up, upModel), req.ClientHeader)
 		log.UpstreamStatus = status
 	} else {
 		var convBody []byte
@@ -393,9 +416,9 @@ func (e *Executor) handleStream(ctx context.Context, w http.ResponseWriter, req 
 	var upstreamBody []byte
 	var err error
 	if cand.Mode == model.ForwardNativePassthrough {
-		upstreamBody = withModel(req.Body, upModel)
+		upstreamBody = e.rewriteUpstreamBody(ctx, withModel(req.Body, upModel), up, upModel)
 	} else {
-		upstreamBody, err = e.sendConvertedBody(ch, up, req, upModel)
+		upstreamBody, err = e.sendConvertedBody(ctx, ch, up, req, upModel)
 		if err != nil {
 			return err
 		}
@@ -567,20 +590,21 @@ func (e *Executor) sendNonStream(ctx context.Context, ch *model.Channel, p model
 
 // sendConverted 转换请求后发送（非流式）。
 func (e *Executor) sendConverted(ctx context.Context, ch *model.Channel, up model.Protocol, req *Request, upModel string) ([]byte, int, error) {
-	body, err := e.sendConvertedBody(ch, up, req, upModel)
+	body, err := e.sendConvertedBody(ctx, ch, up, req, upModel)
 	if err != nil {
 		return nil, 0, err
 	}
 	return e.sendNonStream(ctx, ch, up, body, req.ClientHeader)
 }
 
-// sendConvertedBody 构造转换后的上游请求体（upModel 为实际上游模型）。
-func (e *Executor) sendConvertedBody(ch *model.Channel, up model.Protocol, req *Request, upModel string) ([]byte, error) {
+// sendConvertedBody 构造转换后的上游请求体（upModel 为实际上游模型），
+// 并按改写规则翻译思维档位（档位 -> thinking 开关）。
+func (e *Executor) sendConvertedBody(ctx context.Context, ch *model.Channel, up model.Protocol, req *Request, upModel string) ([]byte, error) {
 	body, err := provider.ConvertRequest(req.Protocol, up, req.Body, upModel)
 	if err != nil {
 		return nil, fmt.Errorf("请求转换失败: %w", err)
 	}
-	return body, nil
+	return e.rewriteUpstreamBody(ctx, body, up, upModel), nil
 }
 
 // estimateUsage 本地估算兜底：prompt 来自入站文本，completion 来自流式累积文本。

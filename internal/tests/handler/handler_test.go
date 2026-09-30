@@ -81,6 +81,9 @@ func newTestEnvFull(t *testing.T, requireKey bool) (*gorm.DB, *gin.Engine, *http
 	}
 	exec := gateway.NewExecutor(chRepo, logRepo, bus, upstreamTimeout)
 	exec.SetPricing(costSvc)
+	// 思维档位改写：规则存内存库并接入网关出站链路
+	reasoningSvc := service.NewReasoningRewriteService(repository.NewReasoningRewriteRepository(db))
+	exec.SetRewrites(reasoningSvc)
 	hub := ws.NewHub(30*time.Second, 10*time.Second)
 
 	engine := gin.New()
@@ -91,15 +94,16 @@ func newTestEnvFull(t *testing.T, requireKey bool) (*gorm.DB, *gin.Engine, *http
 		"assets/app.js": &fstest.MapFile{Data: []byte("console.log(1)")},
 	}
 	router.Register(engine, &router.Deps{
-		Cfg:      &config.Config{},
-		Channels: admin.NewChannelHandler(channelSvc),
-		Keys:     admin.NewKeyHandler(keySvc),
-		Logs:     admin.NewLogHandler(logSvc),
-		Stats:    admin.NewStatsHandler(statsSvc),
-		Pricing:  admin.NewPricingHandler(costSvc),
-		WS:       admin.NewWSHandler(hub),
-		Gateway:  gwhandler.NewHandler(exec, keySvc, requireKey, 1<<20),
-		WebFS:    memFS,
+		Cfg:            &config.Config{},
+		Channels:       admin.NewChannelHandler(channelSvc),
+		Keys:           admin.NewKeyHandler(keySvc),
+		Logs:           admin.NewLogHandler(logSvc),
+		Stats:          admin.NewStatsHandler(statsSvc),
+		Pricing:        admin.NewPricingHandler(costSvc),
+		ReasonRewrites: admin.NewReasoningRewriteHandler(reasoningSvc),
+		WS:             admin.NewWSHandler(hub),
+		Gateway:        gwhandler.NewHandler(exec, keySvc, requireKey, 1<<20),
+		WebFS:          memFS,
 	})
 
 	srv := httptest.NewServer(engine)

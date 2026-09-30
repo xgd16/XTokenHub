@@ -27,6 +27,7 @@ type Deps struct {
 	WS             *admin.WSHandler
 	SessionHeaders *admin.SessionHeaderConfigHandler
 	Pricing        *admin.PricingHandler
+	ReasonRewrites *admin.ReasoningRewriteHandler
 	Gateway        *gwhandler.Handler
 	WebFS          fs.FS // 前端产物（可为 nil：仅 API）
 }
@@ -87,6 +88,11 @@ func Register(engine *gin.Engine, d *Deps) {
 		api.DELETE("/settings/prices/:id", d.Pricing.DeletePrice)
 		api.GET("/settings/billing", d.Pricing.GetBilling)
 		api.PUT("/settings/billing", d.Pricing.UpdateBilling)
+		api.GET("/reasoning-rewrites", d.ReasonRewrites.List)
+		api.POST("/reasoning-rewrites", d.ReasonRewrites.Create)
+		api.GET("/reasoning-rewrites/:id", d.ReasonRewrites.Get)
+		api.PUT("/reasoning-rewrites/:id", d.ReasonRewrites.Update)
+		api.DELETE("/reasoning-rewrites/:id", d.ReasonRewrites.Delete)
 	}
 
 	// 网关端点

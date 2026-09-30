@@ -140,6 +140,10 @@ func main() {
 	exec := gateway.NewExecutor(chRepo, logRepo, bus, time.Duration(cfg.Gateway.UpstreamTimeout)*time.Second)
 	exec.SetCustomModels(customRepo)
 	exec.SetPricing(costSvc)
+	// 思维档位改写：按上游模型把 reasoning_effort 等档位翻译成 thinking 开关（MiMo 类上游）
+	reasoningRepo := repository.NewReasoningRewriteRepository(db)
+	reasoningSvc := service.NewReasoningRewriteService(reasoningRepo)
+	exec.SetRewrites(reasoningSvc)
 	throughput := gateway.NewThroughput(bus, 500*time.Millisecond, 5*time.Second)
 	exec.SetThroughput(throughput)
 	thCtx, thCancel := context.WithCancel(context.Background())
@@ -173,6 +177,7 @@ func main() {
 		WS:             admin.NewWSHandler(hub),
 		SessionHeaders: admin.NewSessionHeaderConfigHandler(sessionHeaderSvc),
 		Pricing:        admin.NewPricingHandler(costSvc),
+		ReasonRewrites: admin.NewReasoningRewriteHandler(reasoningSvc),
 		Gateway:        gwhandler.NewHandler(exec, keySvc, cfg.Gateway.RequireKey, cfg.Gateway.MaxBodyBytes),
 	}
 	// 网关按配置的会话 Header 名单提取会话标识（默认 X-Session-Id + 自定义扩展）

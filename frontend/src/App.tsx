@@ -16,6 +16,7 @@ const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Channels = lazy(() => import('./pages/Channels'))
 const Models = lazy(() => import('./pages/Models'))
 const CustomModels = lazy(() => import('./pages/CustomModels'))
+const ReasoningRewrites = lazy(() => import('./pages/ReasoningRewrites'))
 const Keys = lazy(() => import('./pages/Keys'))
 const RequestLogs = lazy(() => import('./pages/RequestLogs'))
 const Settings = lazy(() => import('./pages/Settings'))
@@ -80,6 +81,7 @@ export default function App() {
                 <Route path="/channels" element={<Channels />} />
                 <Route path="/models" element={<Models />} />
                 <Route path="/custom-models" element={<CustomModels />} />
+                <Route path="/reasoning-rewrites" element={<ReasoningRewrites />} />
                 <Route path="/keys" element={<Keys />} />
                 <Route path="/logs" element={<RequestLogs />} />
                 <Route path="/settings" element={<Settings />} />
