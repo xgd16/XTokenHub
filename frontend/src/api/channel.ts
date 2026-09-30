@@ -73,9 +73,9 @@ export interface LookupModelsInput {
   api_key: string
 }
 
-/** 上游账户余额（当前支持 DeepSeek）。 */
+/** 上游账户余额（DeepSeek 走官方 API；MiMo 走网页控制台 Cookie 重放）。 */
 export interface BalanceInfo {
-  provider: 'deepseek'
+  provider: 'deepseek' | 'mimo'
   is_available: boolean
   currency: string
   total: number

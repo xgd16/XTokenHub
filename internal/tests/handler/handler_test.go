@@ -66,7 +66,7 @@ func newTestEnvFull(t *testing.T, requireKey bool) (*gorm.DB, *gin.Engine, *http
 	channelSvc := service.NewChannelService(chRepo, prober, bus)
 	keySvc := service.NewKeyService(keyRepo)
 	logSvc := service.NewLogService(logRepo)
-	statsSvc := service.NewStatsService(logRepo)
+	statsSvc := service.NewStatsService(logRepo, testutil.SeedDailyStats(t, db))
 	// 计价：价格表存内存库，价格源用桩（不联网）；网关侧同步注入以覆盖写入时计费
 	costSvc := service.NewCostService(
 		repository.NewModelPriceRepository(db),
@@ -94,16 +94,16 @@ func newTestEnvFull(t *testing.T, requireKey bool) (*gorm.DB, *gin.Engine, *http
 		"assets/app.js": &fstest.MapFile{Data: []byte("console.log(1)")},
 	}
 	router.Register(engine, &router.Deps{
-		Cfg:            &config.Config{},
-		Channels:       admin.NewChannelHandler(channelSvc),
-		Keys:           admin.NewKeyHandler(keySvc),
-		Logs:           admin.NewLogHandler(logSvc),
-		Stats:          admin.NewStatsHandler(statsSvc),
-		Pricing:        admin.NewPricingHandler(costSvc),
+		Cfg:      &config.Config{},
+		Channels: admin.NewChannelHandler(channelSvc),
+		Keys:     admin.NewKeyHandler(keySvc),
+		Logs:     admin.NewLogHandler(logSvc),
+		Stats:    admin.NewStatsHandler(statsSvc),
+		Pricing:  admin.NewPricingHandler(costSvc),
 		ReasonRewrites: admin.NewReasoningRewriteHandler(reasoningSvc),
-		WS:             admin.NewWSHandler(hub),
-		Gateway:        gwhandler.NewHandler(exec, keySvc, requireKey, 1<<20),
-		WebFS:          memFS,
+		WS:       admin.NewWSHandler(hub),
+		Gateway:  gwhandler.NewHandler(exec, keySvc, requireKey, 1<<20),
+		WebFS:    memFS,
 	})
 
 	srv := httptest.NewServer(engine)

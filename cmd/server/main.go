@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"xtokenhub/internal/aggregation"
 	"xtokenhub/internal/cleanup"
 	"xtokenhub/internal/config"
 	"xtokenhub/internal/database"
@@ -91,15 +92,26 @@ func main() {
 	sessionHeaderRepo := repository.NewSessionHeaderConfigRepo(db)
 	priceRepo := repository.NewModelPriceRepository(db)
 	billingRepo := repository.NewBillingSettingsRepository(db)
+	dailyRepo := repository.NewDailyStatsRepository(db)
+	dataRepo := repository.NewDataSettingsRepository(db)
+	mimoRepo := repository.NewMimoSettingsRepository(db)
 	prober := provider.NewProber(time.Duration(cfg.Gateway.UpstreamTimeout) * time.Second)
 
 	channelSvc := service.NewChannelService(chRepo, prober, bus)
-	// 渠道余额查询（当前支持 DeepSeek，按 BaseURL host 识别）
+	// 渠道余额查询（DeepSeek 走 API Key；MiMo 走网页 Cookie，端点在平台域名）
 	channelSvc.SetBalanceClient(provider.NewBalanceClient(15 * time.Second))
+	mimoSvc := service.NewMimoSettingsService(mimoRepo)
+	channelSvc.SetBalanceCookieProvider(mimoSvc.Cookie)
+	if err := mimoSvc.EnsureDefaults(context.Background()); err != nil {
+		log.Warn("播种 MiMo 凭证设置失败", logger.Err(err))
+	}
+	// 保存新 Cookie 后立即失效余额缓存，下次查询即用新凭证
+	mimoSvc.SetOnCookieChanged(channelSvc.InvalidateBalances)
 	keySvc := service.NewKeyService(keyRepo)
 	logSvc := service.NewLogService(logRepo)
-	statsSvc := service.NewStatsService(logRepo)
+	statsSvc := service.NewStatsService(logRepo, dailyRepo)
 	modelSvc := service.NewModelService(logRepo, chRepo, customRepo)
+	modelSvc.SetDailyStats(dailyRepo)
 	customSvc := service.NewCustomModelService(customRepo)
 	sessionHeaderSvc := service.NewSessionHeaderConfigService(sessionHeaderRepo)
 	// 种子化默认会话标识（X-Session-Id）：表为空时写入，保证升级后行为不变
@@ -125,6 +137,7 @@ func main() {
 		},
 	)
 	costSvc.SetChannels(chRepo)
+	costSvc.SetDailyStats(dailyRepo)
 	if err := costSvc.EnsureDefaults(context.Background()); err != nil {
 		log.Warn("初始化计价服务失败", logger.Err(err))
 	}
@@ -149,19 +162,60 @@ func main() {
 	thCtx, thCancel := context.WithCancel(context.Background())
 	go throughput.Run(thCtx)
 
-	// 日志保留期清理（默认开启；手动 API 始终可用）
-	retention := cleanup.NewRetention(logRepo, db, cleanup.Options{
-		Enabled:     cfg.Retention.Enabled,
-		MaxDays:     cfg.Retention.MaxDays,
-		IntervalHrs: cfg.Retention.IntervalHours,
-		BatchSize:   cfg.Retention.BatchSize,
-		Vacuum:      cfg.Retention.Vacuum,
+	// 日志保留期清理 + 日级聚合：配置存 data_settings（首次以 yaml retention 播种，
+	// 之后以设置页为准，改完即生效），执行结果持久化回设置行，重启不丢。
+	aggSvc := aggregation.New(dailyRepo, dataRepo)
+	cleanupSettings := func(ctx context.Context) (cleanup.Settings, error) {
+		row, err := dataRepo.Get(ctx)
+		if err != nil {
+			return cleanup.Settings{}, err
+		}
+		return cleanup.Settings{
+			Enabled:              row.CleanupEnabled,
+			Mode:                 row.CleanupMode,
+			RunHour:              row.CleanupRunHour,
+			IntervalHours:        row.CleanupIntervalHours,
+			MaxDays:              row.CleanupMaxDays,
+			BatchSize:            row.CleanupBatchSize,
+			Vacuum:               row.CleanupVacuum,
+			TrimHeaders:          row.TrimHeaders,
+			TrimHeadersAfterDays: row.TrimHeadersAfterDays,
+			LastCleanupDay:       row.LastCleanupDay,
+			LastCleanupAt:        row.LastCleanupAt,
+		}, nil
+	}
+	persistResult := func(ctx context.Context, res *cleanup.Result) {
+		if err := dataRepo.UpdateCleanupStatus(ctx, res.DoneAt, repository.DayBucketOf(res.DoneAt),
+			res.DeletedRows, res.TrimmedRows, res.DurationMS, res.Error); err != nil {
+			log.Warn("清理结果持久化失败", logger.Err(err))
+		}
+	}
+	retention := cleanup.NewRetention(logRepo, db, cleanupSettings, persistResult)
+	// 费用重算会改写明细 cost_usd，完成后把受影响日重建进聚合表
+	costSvc.SetPostRecompute(func(ctx context.Context, from, to time.Time) {
+		if err := aggSvc.RebuildRange(ctx, from, to); err != nil {
+			log.Warn("费用重算后重建聚合失败", logger.Err(err))
+		}
 	})
+	dataSvc := service.NewDataSettingsService(dataRepo, aggSvc, retention, model.DataSettings{
+		CleanupEnabled:       cfg.Retention.Enabled,
+		CleanupMode:          model.CleanupModeDaily,
+		CleanupRunHour:       4, // 默认凌晨 4 点低峰执行
+		CleanupIntervalHours: cfg.Retention.IntervalHours,
+		CleanupMaxDays:       cfg.Retention.MaxDays,
+		CleanupBatchSize:     cfg.Retention.BatchSize,
+		CleanupVacuum:        cfg.Retention.Vacuum,
+		TrimHeaders:          true,
+		TrimHeadersAfterDays: 7,
+	})
+	if err := dataSvc.EnsureDefaults(context.Background()); err != nil {
+		log.Warn("播种数据管理设置失败", logger.Err(err))
+	}
 	retSvc := service.NewRetentionService(retention)
 	retCtx, retCancel := context.WithCancel(context.Background())
-	if cfg.Retention.Enabled {
-		go retention.Run(retCtx)
-	}
+	go retention.Run(retCtx)
+	aggCtx, aggCancel := context.WithCancel(context.Background())
+	go aggSvc.Run(aggCtx)
 
 	// 路由
 	engine := gin.New()
@@ -177,6 +231,8 @@ func main() {
 		WS:             admin.NewWSHandler(hub),
 		SessionHeaders: admin.NewSessionHeaderConfigHandler(sessionHeaderSvc),
 		Pricing:        admin.NewPricingHandler(costSvc),
+		DataSettings:   admin.NewDataSettingsHandler(dataSvc),
+		MimoSettings:   admin.NewMimoSettingsHandler(mimoSvc),
 		ReasonRewrites: admin.NewReasoningRewriteHandler(reasoningSvc),
 		Gateway:        gwhandler.NewHandler(exec, keySvc, cfg.Gateway.RequireKey, cfg.Gateway.MaxBodyBytes),
 	}
@@ -216,6 +272,7 @@ func main() {
 	}
 	thCancel()
 	retCancel()
+	aggCancel()
 	priceCancel()
 	hub.Close()
 	bus.Wait()

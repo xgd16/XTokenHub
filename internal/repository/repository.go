@@ -46,6 +46,12 @@ type RequestLogRepository interface {
 	GroupByKey(ctx context.Context, since time.Time) ([]GroupStat, error)
 	// ModelUsage 按模型聚合多时间窗（1h/24h/7d/30d）使用量，now 为窗口基准时刻。
 	ModelUsage(ctx context.Context, now time.Time) ([]ModelUsageStat, error)
+	// ModelRecent 近窗（1h/24h/当天零点起）按模型聚合：一次只扫近 24h 明细，
+	// 7d/30d 窗由日 × 模型聚合表提供，service 层合并（见 ModelService.Usage）。
+	ModelRecent(ctx context.Context, now time.Time) ([]ModelRecent, error)
+	// TrimHeadersBefore 置空 created_at 早于 cutoff 的行的 request_headers，单批 limit 行，
+	// 返回实际置空行数。请求头单行可达 4KB，是日志表体积大头，超期置空显著省空间。
+	TrimHeadersBefore(ctx context.Context, cutoff time.Time, limit int) (int64, error)
 	// DailyUsage 按日聚合使用量（含成功请求最大耗时），供全历史累计统计与热力图。
 	DailyUsage(ctx context.Context, since time.Time) ([]DayUsage, error)
 	// TrendByDayModel 按日 × 模型聚合 token 用量，供多模型趋势线。
@@ -203,6 +209,48 @@ type ReasoningRewriteRepository interface {
 	ListPaged(ctx context.Context, q string, offset, limit int) ([]model.ReasoningRewrite, int64, error)
 }
 
+// DailyStatsRepository 日级聚合数据访问接口（daily_usage_stats / daily_model_stats）。
+// 聚合行按本地日一行，封存后不再变动：保留期清理明细不影响累计统计。
+type DailyStatsRepository interface {
+	// RebuildDay 重建单个本地日的聚合（两表同日先删后插，幂等）；
+	// 源日已无明细时不做任何改动（保护已封存的累计数据）。
+	RebuildDay(ctx context.Context, day int64) error
+	// BackfillAll 全量回填：清空聚合表后按现存明细整体重建，返回聚合出的天数。
+	BackfillAll(ctx context.Context) (int64, error)
+	// SumDays 汇总 [fromDay, toDay] 的日级聚合；fromDay=0 表示不限起点。
+	SumDays(ctx context.Context, fromDay, toDay int64) (*model.DailyUsageStat, error)
+	// ListDays 列出 [fromDay, toDay] 的日级聚合（按日升序）；fromDay=0 表示不限起点。
+	ListDays(ctx context.Context, fromDay, toDay int64) ([]model.DailyUsageStat, error)
+	// ListModelDays 列出 [fromDay, toDay] 的日 × 模型聚合（按日、模型升序）。
+	ListModelDays(ctx context.Context, fromDay, toDay int64) ([]model.DailyModelStat, error)
+	// MinMaxDay 已聚合的最小/最大日桶号（表为空返回 0, 0）。
+	MinMaxDay(ctx context.Context) (minDay, maxDay int64, err error)
+}
+
+// DataSettingsRepository 数据管理设置数据访问接口（单行表，ID 固定为 1）。
+type DataSettingsRepository interface {
+	// Get 读取单行设置，不存在返回 gorm.ErrRecordNotFound。
+	Get(ctx context.Context) (*model.DataSettings, error)
+	// Save 全量保存（首次播种用）。
+	Save(ctx context.Context, s *model.DataSettings) error
+	// UpdateConfig 只更新清理配置列，避免覆盖后台任务写回的运行状态。
+	UpdateConfig(ctx context.Context, s *model.DataSettings) error
+	// UpdateAggStatus 聚合任务写回水位线与最近执行时间。
+	UpdateAggStatus(ctx context.Context, watermarkDay int64, at time.Time) error
+	// UpdateCleanupStatus 清理任务写回最近一次执行结果。
+	UpdateCleanupStatus(ctx context.Context, at time.Time, day int64, deleted, trimmed, durationMS int64, lastErr string) error
+}
+
+// MimoSettingsRepository MiMo 网页余额凭证数据访问接口（单行表，ID 固定为 1）。
+type MimoSettingsRepository interface {
+	// Get 读取单行设置，不存在返回 gorm.ErrRecordNotFound。
+	Get(ctx context.Context) (*model.MimoSettings, error)
+	// Save 全量保存（首次播种用）。
+	Save(ctx context.Context, s *model.MimoSettings) error
+	// UpdateCookie 只更新凭证列。
+	UpdateCookie(ctx context.Context, cookie string) error
+}
+
 // ModelWindow 模型在单个时间窗内的使用量。
 type ModelWindow struct {
 	Requests    int64 `json:"requests"`
@@ -217,6 +265,15 @@ type ModelUsageStat struct {
 	W24h  ModelWindow `json:"w_24h"`
 	W7d   ModelWindow `json:"w_7d"`
 	W30d  ModelWindow `json:"w_30d"`
+}
+
+// ModelRecent 模型近窗使用量（1h/24h/当天零点起），一次只扫近 24h 明细；
+// Today 窗用于给日 × 模型聚合表的完整日数据补上当天的实时部分。
+type ModelRecent struct {
+	Model string      `json:"model"`
+	W1h   ModelWindow `json:"w_1h"`
+	W24h  ModelWindow `json:"w_24h"`
+	Today ModelWindow `json:"today"`
 }
 
 // DayUsage 单日聚合使用量（含成功请求最大耗时）。

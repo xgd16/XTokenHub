@@ -28,7 +28,12 @@ func (h *CleanupHandler) Trigger(c *gin.Context) {
 	resp.OK(c, res)
 }
 
-// Status GET /api/v1/logs/cleanup —— 清理状态（enabled、保留天数、上次运行信息）。
+// Status GET /api/v1/logs/cleanup —— 清理状态（enabled、模式/时刻、上次运行信息）。
 func (h *CleanupHandler) Status(c *gin.Context) {
-	resp.OK(c, h.svc.Status())
+	sv, err := h.svc.Status(c.Request.Context())
+	if err != nil {
+		resp.Fail(c, err)
+		return
+	}
+	resp.OK(c, sv)
 }

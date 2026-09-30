@@ -57,14 +57,22 @@ export interface CleanupResult {
   error?: string
 }
 
-/** 清理状态。 */
+/** 清理状态（后端 cleanup.StatusView，配置来自数据管理设置）。 */
 export interface CleanupStatus {
   enabled: boolean
   max_days: number
+  /** 兼容字段：interval 模式的周期值。 */
   interval_hours: number
+  /** 触发模式：daily（每天固定时刻）| interval（固定间隔）。 */
+  mode: 'daily' | 'interval'
+  /** daily 模式每日执行时刻（0-23）。 */
+  run_hour: number
   vacuum: boolean
+  trim_headers: boolean
+  trim_headers_after_days: number
   last_run_at?: string
   last_deleted_rows: number
+  last_trimmed_rows: number
   last_duration_ms: number
   last_error?: string
 }

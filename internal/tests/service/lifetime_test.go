@@ -36,7 +36,7 @@ func TestStatsLifetime(t *testing.T) {
 		}
 	}
 
-	svc := service.NewStatsService(logRepo)
+	svc := service.NewStatsService(logRepo, testutil.SeedDailyStats(t, db))
 	st, err := svc.Lifetime(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +91,7 @@ func TestStatsFlexSince(t *testing.T) {
 		}
 	}
 
-	svc := service.NewStatsService(logRepo)
+	svc := service.NewStatsService(logRepo, testutil.SeedDailyStats(t, db))
 	s, err := svc.SummaryFlex(ctx, midnight.Unix(), 0)
 	if err != nil {
 		t.Fatal(err)

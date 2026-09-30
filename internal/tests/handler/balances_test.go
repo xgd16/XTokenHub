@@ -1,6 +1,7 @@
 package handler_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -42,7 +43,7 @@ func newBalanceEnv(t *testing.T) (*service.ChannelService, *httptest.Server, *ev
 	channelSvc.SetBalanceClient(provider.NewBalanceClient(2 * time.Second))
 	keySvc := service.NewKeyService(keyRepo)
 	logSvc := service.NewLogService(logRepo)
-	statsSvc := service.NewStatsService(logRepo)
+	statsSvc := service.NewStatsService(logRepo, testutil.SeedDailyStats(t, db))
 	exec := gateway.NewExecutor(chRepo, logRepo, bus, 5*time.Second)
 	hub := ws.NewHub(30*time.Second, 10*time.Second)
 
@@ -177,5 +178,89 @@ func TestChannelBalancesEndpoint(t *testing.T) {
 	}
 	if n := hits.Load(); n != 2 {
 		t.Errorf("渠道更新后应重新命中上游, got %d", n)
+	}
+}
+
+// TestChannelBalancesMiMo MiMo 渠道走网页 Cookie 鉴权：Cookie 提供方供值时成功解析，
+// Cookie 为空时返回可操作的错误；更新 Cookie 后缓存应立即失效。
+func TestChannelBalancesMiMo(t *testing.T) {
+	channelSvc, srv, bus := newBalanceEnv(t)
+
+	// 假 MiMo 平台上游：校验 Cookie 头，返回网页余额结构
+	var lastCookie atomic.Value
+	mimoUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lastCookie.Store(r.Header.Get("Cookie"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"message":"","data":{"balance":"29.21","frozenBalance":"0.00","currency":"CNY","giftBalance":"1.21","cashBalance":"28.00"}}`))
+	}))
+	defer mimoUp.Close()
+
+	client := provider.NewBalanceClient(2 * time.Second)
+	client.SetMimoEndpoint(mimoUp.URL + "/api/v1/balance")
+	channelSvc.SetBalanceClient(client)
+
+	// 假上游 host 无 xiaomimimo 字样，注入按前缀识别
+	channelSvc.SetBalanceKindResolver(func(baseURL string) provider.BalanceProviderKind {
+		if strings.HasPrefix(baseURL, mimoUp.URL) {
+			return provider.BalanceProviderMiMo
+		}
+		return provider.InferBalanceProvider(baseURL)
+	})
+
+	// Cookie 提供方：默认给值，可切换为未配置
+	cookie := atomic.Value{}
+	cookie.Store(`userId=266075060; api-platform_serviceToken="tok="`)
+	channelSvc.SetBalanceCookieProvider(func(context.Context) (string, error) {
+		return cookie.Load().(string), nil
+	})
+
+	var events atomic.Int64
+	unsub := bus.Subscribe(eventbus.EventChannelBalance, func(eventbus.Event) { events.Add(1) })
+	defer unsub()
+
+	code, env, raw := doJSON(t, srv, "POST", "/api/v1/channels", map[string]any{
+		"name": "mimo", "provider": "openai_compatible", "base_url": mimoUp.URL, "api_key": "tp-key",
+	})
+	if code != 200 {
+		t.Fatalf("create mimo: %d %v", code, env)
+	}
+
+	code, env, raw = doJSON(t, srv, "GET", "/api/v1/channels/balances", nil)
+	if code != 200 || env["code"] != float64(0) {
+		t.Fatalf("balances: %d %s", code, raw)
+	}
+	items := balanceEntryItems(t, env)
+	entry := items[1]
+	if entry["supported"] != true || entry["ok"] != true {
+		t.Fatalf("mimo 条目应 supported+ok: %v", entry)
+	}
+	b, _ := entry["balance"].(map[string]any)
+	if b == nil || b["total"] != float64(29.21) || b["granted"] != float64(1.21) || b["topped_up"] != float64(28.00) || b["currency"] != "CNY" {
+		t.Errorf("余额解析错误: %v", entry["balance"])
+	}
+	if got, _ := lastCookie.Load().(string); !strings.Contains(got, "api-platform_serviceToken") {
+		t.Errorf("上游应收到网页 Cookie, got %q", got)
+	}
+	bus.Wait()
+	if events.Load() != 1 {
+		t.Errorf("余额事件应发布 1 次, got %d", events.Load())
+	}
+
+	// Cookie 清空 -> 缓存失效 -> 报「未配置」而非打上游
+	cookie.Store("")
+	channelSvc.InvalidateBalances()
+	_, env, _ = doJSON(t, srv, "GET", "/api/v1/channels/balances", nil)
+	items = balanceEntryItems(t, env)
+	if items[1]["ok"] != false || !strings.Contains(items[1]["error"].(string), "未配置 MiMo 网页 Cookie") {
+		t.Errorf("未配置 Cookie 应报可操作错误: %v", items[1])
+	}
+
+	// 换新 Cookie -> 再查应重新打上游并成功
+	cookie.Store(`userId=266075060; api-platform_serviceToken="tok2="`)
+	channelSvc.InvalidateBalances()
+	_, env, _ = doJSON(t, srv, "GET", "/api/v1/channels/balances", nil)
+	items = balanceEntryItems(t, env)
+	if items[1]["ok"] != true {
+		t.Errorf("新 Cookie 应恢复成功: %v", items[1])
 	}
 }

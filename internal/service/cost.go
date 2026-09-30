@@ -114,6 +114,12 @@ type CostService struct {
 
 	channels ChannelProviderSource
 
+	// daily 日级聚合仓储：注入后月度花费与日均基准的完整历史日读聚合表（当天仍实时），
+	// 未注入（测试/降级）时维持明细实时聚合。
+	daily repository.DailyStatsRepository
+	// postRecompute 费用重算完成后的回调：把受影响日重建进聚合表（main 注入）。
+	postRecompute func(ctx context.Context, from, to time.Time)
+
 	mu       sync.RWMutex
 	index    map[string]provider.ModelPriceEntry
 	loadedAt time.Time
@@ -158,6 +164,15 @@ func NewCostService(
 
 // SetChannels 注入渠道来源（nil = 重算时仅按入站协议推断口径）。
 func (s *CostService) SetChannels(src ChannelProviderSource) { s.channels = src }
+
+// SetDailyStats 注入日级聚合仓储（nil = 花费统计维持明细实时聚合）。
+func (s *CostService) SetDailyStats(daily repository.DailyStatsRepository) { s.daily = daily }
+
+// SetPostRecompute 注册费用重算完成后的回调：费用修正要同步重建受影响日的聚合行，
+// 否则聚合表与明细口径漂移。仅在有行实际变更时触发（见 Recompute）。
+func (s *CostService) SetPostRecompute(fn func(ctx context.Context, from, to time.Time)) {
+	s.postRecompute = fn
+}
 
 // EnsureDefaults 初始化计价基础设施：种子化计费设置、预热价格索引，
 // 价格表为空时（首次启用）触发一次同步。同步失败只告警，不阻塞启动。
@@ -553,6 +568,10 @@ func (s *CostService) Recompute(ctx context.Context, from, to time.Time, onlyMis
 	}
 	logger.L(pricingLogModule).Info("费用重算完成",
 		"scanned", res.Scanned, "updated", res.Updated, "only_missing", onlyMissing)
+	// 有行实际变更才重建聚合：无变更时聚合表与明细仍一致，避免无谓的全范围重扫
+	if s.postRecompute != nil && res.Updated > 0 {
+		s.postRecompute(ctx, from, effectiveTo)
+	}
 	return res, nil
 }
 

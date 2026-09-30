@@ -439,11 +439,17 @@ export default function RequestLogs() {
           <Tooltip
             title={
               <div style={{ fontSize: 12, lineHeight: 1.7 }}>
-                <div>保留最近 {cleanupStatus?.max_days ?? 90} 天，定时清理周期 {cleanupStatus?.interval_hours ?? 24}h</div>
+                <div>
+                  保留最近 {cleanupStatus?.max_days ?? 90} 天，
+                  {cleanupStatus?.mode === 'interval'
+                    ? `每 ${cleanupStatus?.interval_hours ?? 24} 小时自动清理一次`
+                    : `每天 ${String(cleanupStatus?.run_hour ?? 4).padStart(2, '0')}:00 自动清理`}
+                </div>
                 {cleanupStatus?.enabled === false && <div style={{ color: 'var(--amber)' }}>后台定时清理已关闭，仍可手动执行</div>}
                 {cleanupStatus?.last_run_at && (
                   <div>
                     上次 {fullTime(cleanupStatus.last_run_at)} · 删除 {compactCN(cleanupStatus.last_deleted_rows)} 条
+                    {cleanupStatus.last_trimmed_rows > 0 && ` · 置空请求头 ${compactCN(cleanupStatus.last_trimmed_rows)} 条`}
                   </div>
                 )}
               </div>

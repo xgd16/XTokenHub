@@ -40,6 +40,19 @@ func (r *logRepo) DeleteBefore(ctx context.Context, cutoff time.Time, limit int)
 	return res.RowsAffected, res.Error
 }
 
+// TrimHeadersBefore 置空 created_at 早于 cutoff 的行的 request_headers，单批 limit 行（分批同 DeleteBefore）。
+// 请求头单行可达 4KB，是日志表体积大头；除日志详情页外所有统计都不读它，超期置空显著省空间。
+// 已是空串/NULL 的行不重复写。
+func (r *logRepo) TrimHeadersBefore(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	res := r.db.WithContext(ctx).Model(&model.RequestLog{}).
+		Where("id IN (SELECT id FROM request_logs WHERE request_headers <> '' AND created_at < ? LIMIT ?)", cutoff, limit).
+		Update("request_headers", "")
+	return res.RowsAffected, res.Error
+}
+
 func (r *logRepo) Get(ctx context.Context, id int64) (*model.RequestLog, error) {
 	var l model.RequestLog
 	if err := r.db.WithContext(ctx).First(&l, id).Error; err != nil {
@@ -317,7 +330,7 @@ func (r *logRepo) ModelUsage(ctx context.Context, now time.Time) ([]ModelUsageSt
 	if err != nil {
 		return nil, err
 	}
-	out := make([]ModelUsageStat, 0, len(rows))
+		out := make([]ModelUsageStat, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, ModelUsageStat{
 			Model: row.Model,
@@ -325,6 +338,55 @@ func (r *logRepo) ModelUsage(ctx context.Context, now time.Time) ([]ModelUsageSt
 			W24h:  ModelWindow{Requests: row.R24h, TotalTokens: row.T24h, CachedToken: row.C24h},
 			W7d:   ModelWindow{Requests: row.R7d, TotalTokens: row.T7d, CachedToken: row.C7d},
 			W30d:  ModelWindow{Requests: row.R30d, TotalTokens: row.T30d, CachedToken: row.C30d},
+		})
+	}
+	return out, nil
+}
+
+// ModelRecent 近窗（1h/24h/当天零点起）按模型聚合：与 ModelUsage 同款条件求和写法，
+// 但只扫近 24h 明细（当天零点必在近 24h 内）。7d/30d 窗由日 × 模型聚合表提供，
+// service 层把两份结果按模型合并。
+func (r *logRepo) ModelRecent(ctx context.Context, now time.Time) ([]ModelRecent, error) {
+	t1h := now.Add(-time.Hour)
+	t24h := now.Add(-24 * time.Hour)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	var rows []struct {
+		Model  string `gorm:"column:model"`
+		R1h    int64  `gorm:"column:r1h"`
+		T1h    int64  `gorm:"column:t1h"`
+		C1h    int64  `gorm:"column:c1h"`
+		R24h   int64  `gorm:"column:r24h"`
+		T24h   int64  `gorm:"column:t24h"`
+		C24h   int64  `gorm:"column:c24h"`
+		RToday int64  `gorm:"column:rtoday"`
+		TToday int64  `gorm:"column:ttoday"`
+		CToday int64  `gorm:"column:ctoday"`
+	}
+	err := r.db.WithContext(ctx).Model(&model.RequestLog{}).
+		Where("created_at >= ?", t24h).
+		Select(
+			"model AS model, "+
+				"COALESCE(SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END),0) AS r1h, "+
+				"COALESCE(SUM(CASE WHEN created_at >= ? THEN prompt_tokens + completion_tokens ELSE 0 END),0) AS t1h, "+
+				"COALESCE(SUM(CASE WHEN created_at >= ? THEN cached_tokens ELSE 0 END),0) AS c1h, "+
+				"COUNT(*) AS r24h, "+
+				"COALESCE(SUM(prompt_tokens + completion_tokens),0) AS t24h, "+
+				"COALESCE(SUM(cached_tokens),0) AS c24h, "+
+				"COALESCE(SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END),0) AS rtoday, "+
+				"COALESCE(SUM(CASE WHEN created_at >= ? THEN prompt_tokens + completion_tokens ELSE 0 END),0) AS ttoday, "+
+				"COALESCE(SUM(CASE WHEN created_at >= ? THEN cached_tokens ELSE 0 END),0) AS ctoday",
+			t1h, t1h, t1h, today, today, today,
+		).Group("model").Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ModelRecent, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, ModelRecent{
+			Model: row.Model,
+			W1h:   ModelWindow{Requests: row.R1h, TotalTokens: row.T1h, CachedToken: row.C1h},
+			W24h:  ModelWindow{Requests: row.R24h, TotalTokens: row.T24h, CachedToken: row.C24h},
+			Today: ModelWindow{Requests: row.RToday, TotalTokens: row.TToday, CachedToken: row.CToday},
 		})
 	}
 	return out, nil
@@ -540,8 +602,13 @@ const liveSessionCols = "id, created_at, session_id, prompt_tokens, completion_t
 	"total_tokens, cached_tokens, duration_ms, error, user_agent, key_name, " +
 	"model, channel_name, protocol, forward_mode"
 
+// liveSessionLookback 会话聚合的回看窗口：只统计最近 30 天内活跃的会话。
+// 会话列表关注的是「最近在聊什么」；原先按全历史分组，数据量增长后是两段全表扫描。
+const liveSessionLookback = 30 * 24 * time.Hour
+
 // LiveSessions 最近活跃会话聚合：先按会话键取最近活跃的 N 组，再拉这些组的全部行
-// 在内存中汇总——统计覆盖全量历史，不因前端只保留 200 行而残缺。
+// 在内存中汇总。组内统计覆盖该会话的全部请求（不受前端分页截断），但整体只回看
+// 最近 liveSessionLookback 窗口内的活跃会话，老会话不再参与分组扫描。
 func (r *logRepo) LiveSessions(ctx context.Context, in LiveSessionsInput) ([]LiveSession, error) {
 	limit := in.Limit
 	if limit <= 0 {
@@ -550,6 +617,7 @@ func (r *logRepo) LiveSessions(ctx context.Context, in LiveSessionsInput) ([]Liv
 	if limit > 200 {
 		limit = 200
 	}
+	since := time.Now().Add(-liveSessionLookback)
 
 	// 1) 取最近活跃的会话键（按组内最新请求时间倒序）。
 	// MAX(created_at) 仅用于排序，不扫描成 time.Time（聚合结果由驱动返回字符串）。
@@ -557,6 +625,7 @@ func (r *logRepo) LiveSessions(ctx context.Context, in LiveSessionsInput) ([]Liv
 		Key string `gorm:"column:skey"`
 	}
 	err := r.db.WithContext(ctx).Model(&model.RequestLog{}).
+		Where("created_at >= ?", since).
 		Select(sessionKeyExpr + " AS skey, MAX(created_at) AS last_at").
 		Group("skey").Order("last_at DESC").Limit(limit).Scan(&keys).Error
 	if err != nil {
@@ -574,6 +643,7 @@ func (r *logRepo) LiveSessions(ctx context.Context, in LiveSessionsInput) ([]Liv
 	var rows []model.RequestLog
 	err = r.db.WithContext(ctx).Model(&model.RequestLog{}).
 		Select(liveSessionCols).
+		Where("created_at >= ?", since).
 		Where(sessionKeyExpr+" IN ?", skeys).
 		Order("created_at DESC, id DESC").
 		Find(&rows).Error

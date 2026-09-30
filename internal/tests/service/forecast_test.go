@@ -197,9 +197,13 @@ func TestForecast(t *testing.T) {
 		t.Errorf("本月预测应大于已花费: %v vs %v", month.ProjectedUSD, month.SpentUSD)
 	}
 
-	// 设一个必然超支的预算 -> 给出触及时间
+	// 设一个必然超支的预算 -> 给出触及时间。
+	// 预算取「已花费与预测」的中点：严格大于已花费（触及时间分母为正）、严格小于
+	// 预测。固定预算会在月末当天假失败——剩余不足半天时投影≈已花费+日均×剩余，
+	// 可能压不过预算 10（如 9+2×0.5=10）。
+	budget := (month.SpentUSD + *month.ProjectedUSD) / 2
 	if _, err := svc.UpdateBilling(ctx, &service.UpdateBillingInput{
-		DisplayCurrency: "USD", MonthlyBudgetUSD: 10,
+		DisplayCurrency: "USD", MonthlyBudgetUSD: budget,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -207,8 +211,8 @@ func TestForecast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if month2.BudgetUSD != 10 {
-		t.Errorf("预算 = %v, want 10", month2.BudgetUSD)
+	if month2.BudgetUSD != budget {
+		t.Errorf("预算 = %v, want %v", month2.BudgetUSD, budget)
 	}
 	if month2.BurnPerHourUSD <= 0 {
 		t.Fatal("每小时消耗应大于 0")

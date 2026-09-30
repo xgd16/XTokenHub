@@ -330,7 +330,7 @@ func TestLogAndStatsService(t *testing.T) {
 		t.Fatalf("LogService.List: %v %d", err, total)
 	}
 
-	statsSvc := service.NewStatsService(logRepo)
+	statsSvc := service.NewStatsService(logRepo, testutil.SeedDailyStats(t, db))
 	s, err := statsSvc.Summary(context.Background(), 24)
 	if err != nil {
 		t.Fatal(err)

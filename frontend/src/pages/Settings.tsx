@@ -8,6 +8,7 @@ import {
   Modal,
   Popconfirm,
   Segmented,
+  Select,
   Space,
   Switch,
   Table,
@@ -17,7 +18,7 @@ import {
   message,
 } from 'antd'
 import type { TableColumnsType } from 'antd'
-import { PlusOutlined, DeleteOutlined, ReloadOutlined, InfoCircleOutlined, SyncOutlined, EditOutlined, WarningOutlined } from '@ant-design/icons'
+import { PlusOutlined, DeleteOutlined, ReloadOutlined, InfoCircleOutlined, SyncOutlined, EditOutlined, WarningOutlined, DatabaseOutlined, KeyOutlined } from '@ant-design/icons'
 import { request } from '../api/http'
 import {
   costApi,
@@ -28,6 +29,8 @@ import {
   type SyncStatus,
   type UnpricedModel,
 } from '../api/pricing'
+import { dataSettingsApi, type AggregateStatus, type UpdateDataSettingsInput } from '../api/dataSettings'
+import { mimoSettingsApi, type MimoVerifyResult } from '../api/mimoSettings'
 import {
   formatPricePerMillion,
   fromPerMillion,
@@ -164,6 +167,21 @@ export default function Settings() {
   const [editing, setEditing] = useState<PriceForm | null>(null)
   const [savingPrice, setSavingPrice] = useState(false)
 
+  // 数据管理：清理配置 + 聚合状态
+  const [dataForm, setDataForm] = useState<UpdateDataSettingsInput>({
+    enabled: true, mode: 'daily', run_hour: 4, interval_hours: 24,
+    max_days: 90, batch_size: 1000, vacuum: false, trim_headers: true, trim_headers_after_days: 7,
+  })
+  const [dataSaving, setDataSaving] = useState(false)
+  const [rebuilding, setRebuilding] = useState(false)
+  const [aggStatus, setAggStatus] = useState<AggregateStatus | null>(null)
+
+  // MiMo 网页余额凭证：保存后立即重拉渠道余额验证
+  const [mimoCookie, setMimoCookie] = useState('')
+  const [mimoUpdatedAt, setMimoUpdatedAt] = useState('')
+  const [mimoSaving, setMimoSaving] = useState(false)
+  const [mimoVerify, setMimoVerify] = useState<MimoVerifyResult | null>(null)
+
   const PRICE_PER_PAGE = 20
 
   // 加载会话标识配置：后端信封 {code, message, data} 已由 request() 解包
@@ -217,6 +235,100 @@ export default function Settings() {
     // 仅在首次挂载时拉取；后续由搜索/翻页/同步显式触发
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // 加载数据管理设置与聚合状态
+  const loadDataSettings = useCallback(async () => {
+    try {
+      const view = await dataSettingsApi.get()
+      const c = view.cleanup
+      setDataForm({
+        enabled: c.cleanup_enabled,
+        mode: c.cleanup_mode,
+        run_hour: c.cleanup_run_hour,
+        interval_hours: c.cleanup_interval_hours,
+        max_days: c.cleanup_max_days,
+        batch_size: c.cleanup_batch_size,
+        vacuum: c.cleanup_vacuum,
+        trim_headers: c.trim_headers,
+        trim_headers_after_days: c.trim_headers_after_days,
+      })
+      setAggStatus(view.aggregate ?? null)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '加载数据管理设置失败')
+    }
+  }, [])
+
+  // 保存清理配置：后台任务每轮执行前重读配置，改完即生效
+  const saveDataSettings = useCallback(async () => {
+    setDataSaving(true)
+    try {
+      await dataSettingsApi.update(dataForm)
+      message.success('数据管理设置已保存，后台任务下一轮生效')
+      await loadDataSettings()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '保存失败')
+    } finally {
+      setDataSaving(false)
+    }
+  }, [dataForm, loadDataSettings])
+
+  // 重建聚合：days>0 近 N 天，0 全量（以现存明细为准，累计统计不缩水）
+  const rebuildAggregate = useCallback(async (days: number) => {
+    setRebuilding(true)
+    try {
+      const st = await dataSettingsApi.rebuildAggregate(days)
+      setAggStatus(st)
+      message.success(days > 0 ? `已重建近 ${days} 天聚合` : '聚合已按现存明细全量重建')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '重建失败')
+    } finally {
+      setRebuilding(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadDataSettings()
+  }, [loadDataSettings])
+
+  // 加载 MiMo 凭证（明文回显，便于核对/更新）
+  const loadMimoSettings = useCallback(async () => {
+    try {
+      const row = await mimoSettingsApi.get()
+      setMimoCookie(row.cookie ?? '')
+      setMimoUpdatedAt(row.updated_at ?? '')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '加载 MiMo 凭证失败')
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadMimoSettings()
+  }, [loadMimoSettings])
+
+  // 保存 MiMo 凭证并立即验证：服务端保存后已失效余额缓存，重拉即得新结果
+  const saveMimoCookie = useCallback(async () => {
+    setMimoSaving(true)
+    try {
+      const saved = await mimoSettingsApi.update(mimoCookie.trim())
+      setMimoUpdatedAt(saved.updated_at)
+      message.success('MiMo 凭证已保存')
+      const { items } = await mimoSettingsApi.balances()
+      const entry = (items ?? []).find((it) => it.provider === 'mimo' && it.supported)
+      if (!entry) {
+        setMimoVerify({ ok: false, text: '未找到可查余额的 MiMo 渠道（渠道 BaseURL 需为 xiaomimimo.com 域名）' })
+      } else if (entry.ok && entry.balance) {
+        const parts = [`余额 ¥${entry.balance.total.toFixed(2)}`]
+        if (entry.balance.granted > 0) parts.push(`含赠金 ¥${entry.balance.granted.toFixed(2)}`)
+        setMimoVerify({ ok: true, text: `验证成功：${parts.join('，')}` })
+      } else {
+        setMimoVerify({ ok: false, text: `验证失败：${entry.error || '未知错误'}` })
+      }
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '保存失败')
+    } finally {
+      setMimoSaving(false)
+    }
+  }, [mimoCookie])
 
   // 添加新配置：即时落库，成功后重拉列表
   const addConfig = useCallback(async () => {
@@ -751,6 +863,183 @@ export default function Settings() {
         </div>
         <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 12 }}>
           月度预算仅用于仪表盘的「本月预计花费」超支提示，不会拦截或限流请求。
+        </Text>
+      </Card>
+
+      <Card
+        className="panel"
+        styles={{
+          body: { padding: '16px 20px' },
+          header: { borderBottom: '1px solid var(--border-faint)' },
+        }}
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <DatabaseOutlined style={{ color: 'var(--accent)' }} />
+            <span style={{ fontSize: 14, fontWeight: 500 }}>数据管理</span>
+          </div>
+        }
+      >
+        <Text type="secondary" style={{ fontSize: 13, display: 'block', marginBottom: 16 }}>
+          累计统计（总 Token、连续天数、花费预测、模型用量）按本地日自动聚合落库：
+          完整历史日读聚合表、仅当天实时计算，数据量增大后查询成本只与天数相关。
+          清理过期明细不影响累计数据；请求头只有日志详情页使用，超过瘦身天数自动置空以减小库体积。
+        </Text>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 20, alignItems: 'flex-end' }}>
+          <div>
+            <Text type="secondary" style={{ fontSize: 12, marginBottom: 6, display: 'block' }}>
+              自动清理
+            </Text>
+            <Switch checked={dataForm.enabled} onChange={(v) => setDataForm({ ...dataForm, enabled: v })} />
+          </div>
+          <div>
+            <Text type="secondary" style={{ fontSize: 12, marginBottom: 6, display: 'block' }}>
+              触发方式
+            </Text>
+            <Segmented
+              value={dataForm.mode}
+              onChange={(v) => setDataForm({ ...dataForm, mode: v as 'daily' | 'interval' })}
+              options={[
+                { value: 'daily', label: '每天固定时刻' },
+                { value: 'interval', label: '每 N 小时' },
+              ]}
+            />
+          </div>
+          {dataForm.mode === 'daily' ? (
+            <div>
+              <Text type="secondary" style={{ fontSize: 12, marginBottom: 6, display: 'block' }}>
+                执行时刻
+              </Text>
+              <Select
+                value={dataForm.run_hour}
+                onChange={(v) => setDataForm({ ...dataForm, run_hour: Number(v) })}
+                options={Array.from({ length: 24 }, (_, h) => ({ value: h, label: `${String(h).padStart(2, '0')}:00` }))}
+                style={{ width: 110 }}
+              />
+            </div>
+          ) : (
+            <div>
+              <Text type="secondary" style={{ fontSize: 12, marginBottom: 6, display: 'block' }}>
+                间隔（小时）
+              </Text>
+              <InputNumber
+                min={1}
+                max={720}
+                value={dataForm.interval_hours}
+                onChange={(v) => setDataForm({ ...dataForm, interval_hours: Number(v) || 24 })}
+                style={{ width: 110 }}
+              />
+            </div>
+          )}
+          <div>
+            <Text type="secondary" style={{ fontSize: 12, marginBottom: 6, display: 'block' }}>
+              保留天数（建议 ≥30，覆盖仪表盘窗口）
+            </Text>
+            <InputNumber
+              min={1}
+              max={3650}
+              value={dataForm.max_days}
+              onChange={(v) => setDataForm({ ...dataForm, max_days: Number(v) || 90 })}
+              style={{ width: 130 }}
+            />
+          </div>
+          <div>
+            <Text type="secondary" style={{ fontSize: 12, marginBottom: 6, display: 'block' }}>
+              请求头瘦身
+            </Text>
+            <Space size={8}>
+              <Switch size="small" checked={dataForm.trim_headers} onChange={(v) => setDataForm({ ...dataForm, trim_headers: v })} />
+              <InputNumber
+                size="small"
+                min={1}
+                max={365}
+                value={dataForm.trim_headers_after_days}
+                onChange={(v) => setDataForm({ ...dataForm, trim_headers_after_days: Number(v) || 7 })}
+                style={{ width: 100 }}
+                addonAfter="天"
+              />
+            </Space>
+          </div>
+          <div>
+            <Text type="secondary" style={{ fontSize: 12, marginBottom: 6, display: 'block' }}>
+              清理后 VACUUM
+            </Text>
+            <Switch checked={dataForm.vacuum} onChange={(v) => setDataForm({ ...dataForm, vacuum: v })} />
+          </div>
+          <Button type="primary" onClick={() => void saveDataSettings()} loading={dataSaving}>
+            保存
+          </Button>
+          <Popconfirm
+            title="重建聚合数据？"
+            description="全量重建以现存明细为准：已被清理的日期不会恢复，累计统计不受影响；如需修正近期口径可选近 7 天。"
+            okText="重建"
+            cancelText="取消"
+            onConfirm={() => void rebuildAggregate(0)}
+          >
+            <Button icon={<ReloadOutlined />} loading={rebuilding}>
+              重建聚合
+            </Button>
+          </Popconfirm>
+        </div>
+        {aggStatus?.watermark_date && (
+          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 12 }}>
+            聚合覆盖 {aggStatus.earliest_day || '—'} ~ {aggStatus.latest_day || '—'}，完整日已封存至 {aggStatus.watermark_date}；
+            删除明细后累计统计保持不变。
+          </Text>
+        )}
+      </Card>
+
+      <Card
+        className="panel"
+        styles={{
+          body: { padding: '16px 20px' },
+          header: { borderBottom: '1px solid var(--border-faint)' },
+        }}
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <KeyOutlined style={{ color: 'var(--accent)' }} />
+            <span style={{ fontSize: 14, fontWeight: 500 }}>MiMo 余额凭证</span>
+          </div>
+        }
+      >
+        <Text type="secondary" style={{ fontSize: 13, display: 'block', marginBottom: 12 }}>
+          小米 MiMo 官方未开放余额接口，这里保存网页控制台的会话 Cookie，渠道页用它查询平台余额。
+          凭证由小米服务端管理：过期后渠道页余额显示「查询失败（凭证已过期）」，回本页粘贴最新 Cookie 即可。
+        </Text>
+        <div
+          style={{
+            background: 'var(--bg-elevated)',
+            borderRadius: 6,
+            padding: '10px 14px',
+            marginBottom: 12,
+          }}
+        >
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            获取方式：浏览器登录 platform.xiaomimimo.com → F12 打开 DevTools → Network → 刷新后点任一 api/v1 请求 →
+            Request Headers 里复制 <Text code style={{ fontSize: 12 }}>Cookie</Text> 整行。
+            最小需要 <Text code style={{ fontSize: 12 }}>userId</Text> 与{' '}
+            <Text code style={{ fontSize: 12 }}>api-platform_serviceToken</Text> 两个值。
+          </Text>
+        </div>
+        <Input.TextArea
+          rows={4}
+          value={mimoCookie}
+          onChange={(e) => setMimoCookie(e.target.value)}
+          placeholder='userId=266075060; api-platform_serviceToken="…"; …'
+          style={{ fontFamily: 'monospace', fontSize: 12, marginBottom: 12 }}
+        />
+        <Space size={12} wrap>
+          <Button type="primary" onClick={() => void saveMimoCookie()} loading={mimoSaving}>
+            保存并验证
+          </Button>
+          {mimoVerify && (
+            <Text type={mimoVerify.ok ? 'success' : 'danger'} style={{ fontSize: 13 }}>
+              {mimoVerify.text}
+            </Text>
+          )}
+        </Space>
+        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 12 }}>
+          {mimoUpdatedAt ? `凭证更新于 ${new Date(mimoUpdatedAt).toLocaleString()}。` : '尚未配置凭证。'}
+          与渠道 api_key 同一安全姿态：明文存储，仅本机管理后台可见。
         </Text>
       </Card>
 

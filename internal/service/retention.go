@@ -22,6 +22,6 @@ func (s *RetentionService) Trigger(ctx context.Context) (*cleanup.Result, error)
 }
 
 // Status 清理状态。
-func (s *RetentionService) Status() cleanup.StatusView {
-	return s.retention.Status()
+func (s *RetentionService) Status(ctx context.Context) (cleanup.StatusView, error) {
+	return s.retention.Status(ctx)
 }

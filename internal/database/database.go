@@ -107,7 +107,11 @@ func Migrate(db *gorm.DB) error {
 		&model.SessionHeaderConfig{},
 		&model.ModelPrice{},
 		&model.BillingSettings{},
+		&model.DailyUsageStat{},
+		&model.DailyModelStat{},
+		&model.DataSettings{},
 		&model.ReasoningRewrite{},
+		&model.MimoSettings{},
 	); err != nil {
 		return fmt.Errorf("AutoMigrate: %w", err)
 	}

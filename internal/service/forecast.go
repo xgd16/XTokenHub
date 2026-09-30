@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"xtokenhub/internal/pkg/errs"
+	"xtokenhub/internal/repository"
 )
 
 // 预测口径常量。
@@ -125,6 +126,7 @@ type CostForecast struct {
 }
 
 // Forecast 计算今日/本月已花费与期末预测。
+// 月度周期的完整历史日读日级聚合表 + 当天实时（见 periodSpent），日均基准同理。
 func (s *CostService) Forecast(ctx context.Context, period string) (*CostForecast, error) {
 	now := time.Now()
 	start, end, err := periodRange(period, now)
@@ -132,7 +134,7 @@ func (s *CostService) Forecast(ctx context.Context, period string) (*CostForecas
 		return nil, err
 	}
 
-	spent, _, err := s.logs.CostSince(ctx, start, time.Time{})
+	spent, _, err := s.periodSpent(ctx, period, start, now)
 	if err != nil {
 		return nil, errs.Wrap(errs.CodeInternal, "统计周期花费失败", err)
 	}
@@ -144,17 +146,9 @@ func (s *CostService) Forecast(ctx context.Context, period string) (*CostForecas
 	}
 
 	// 近 7 个完整日（不含当天）作为日均基准
-	dayCosts, err := s.logs.CostByDay(ctx, startOfDay(now).AddDate(0, 0, -(forecastRunRateWindow+1)))
+	daily, err := s.recentCompleteDayCosts(ctx, now, forecastRunRateWindow)
 	if err != nil {
 		return nil, errs.Wrap(errs.CodeInternal, "统计按日花费失败", err)
-	}
-	todayKey := startOfDay(now).Format("2006-01-02")
-	daily := make([]float64, 0, len(dayCosts))
-	for _, d := range dayCosts {
-		if d.Date >= todayKey {
-			continue // 只取已完整的自然日
-		}
-		daily = append(daily, d.CostUSD)
 	}
 	if avg, ok := dailyAverage(daily); ok {
 		out.DailyAvgUSD = avg
@@ -185,6 +179,54 @@ func (s *CostService) Forecast(ctx context.Context, period string) (*CostForecas
 		}
 	}
 	return out, nil
+}
+
+// periodSpent 周期内已花费：月度周期的完整历史日读日级聚合表 + 当天实时；
+// 聚合仓储未注入（测试/降级）或周期起于当天（today 周期）时全走明细。
+func (s *CostService) periodSpent(ctx context.Context, period string, start, now time.Time) (float64, int64, error) {
+	todayStart := startOfDay(now)
+	if s.daily != nil && period == "month" && todayStart.After(start) {
+		rollup, err := s.daily.SumDays(ctx, repository.DayBucketOf(start), repository.DayBucketOf(todayStart)-1)
+		if err != nil {
+			return 0, 0, err
+		}
+		todayCost, todayReqs, err := s.logs.CostSince(ctx, todayStart, time.Time{})
+		if err != nil {
+			return 0, 0, err
+		}
+		return rollup.CostUSD + todayCost, rollup.Requests + todayReqs, nil
+	}
+	return s.logs.CostSince(ctx, start, time.Time{})
+}
+
+// recentCompleteDayCosts 近 n 个完整日（不含当天）的日费用，供日均基准。
+// 聚合仓储注入时读聚合表（无请求的日无聚合行，与明细按日 GROUP BY 语义一致）。
+func (s *CostService) recentCompleteDayCosts(ctx context.Context, now time.Time, n int) ([]float64, error) {
+	todayStart := startOfDay(now)
+	if s.daily != nil {
+		rows, err := s.daily.ListDays(ctx, repository.DayBucketOf(todayStart)-int64(n), repository.DayBucketOf(todayStart)-1)
+		if err != nil {
+			return nil, err
+		}
+		daily := make([]float64, 0, len(rows))
+		for _, r := range rows {
+			daily = append(daily, r.CostUSD)
+		}
+		return daily, nil
+	}
+	dayCosts, err := s.logs.CostByDay(ctx, todayStart.AddDate(0, 0, -(n+1)))
+	if err != nil {
+		return nil, err
+	}
+	todayKey := todayStart.Format("2006-01-02")
+	daily := make([]float64, 0, len(dayCosts))
+	for _, d := range dayCosts {
+		if d.Date >= todayKey {
+			continue // 只取已完整的自然日
+		}
+		daily = append(daily, d.CostUSD)
+	}
+	return daily, nil
 }
 
 // periodRange 周期边界（本地时区，与仪表盘「今天」口径一致）。

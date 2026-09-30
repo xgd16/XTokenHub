@@ -26,6 +26,7 @@ type ChannelService struct {
 	balMu     sync.Mutex
 	balClient *provider.BalanceClient
 	balKind   func(string) provider.BalanceProviderKind
+	balCookie func(ctx context.Context) (string, error) // MiMo 等网页凭证提供方
 	balCache  map[int64]balanceCacheEntry
 }
 
@@ -251,12 +252,14 @@ func (s *LogService) List(ctx context.Context, in ListInput, p pagination.Params
 
 // StatsService 统计业务。
 type StatsService struct {
-	repo repository.RequestLogRepository
+	repo  repository.RequestLogRepository
+	daily repository.DailyStatsRepository
 }
 
-// NewStatsService 构造统计服务。
-func NewStatsService(repo repository.RequestLogRepository) *StatsService {
-	return &StatsService{repo: repo}
+// NewStatsService 构造统计服务。daily 为日级聚合仓储：累计/趋势类统计的完整历史日
+// 改读聚合表（行数=天数级，且封存后不随明细清理缩水），仅当天实时查明细。
+func NewStatsService(repo repository.RequestLogRepository, daily repository.DailyStatsRepository) *StatsService {
+	return &StatsService{repo: repo, daily: daily}
 }
 
 // Range 统计时间范围（小时）。
@@ -275,7 +278,8 @@ func (s *StatsService) Summary(ctx context.Context, hours int) (*repository.Summ
 	return s.repo.Summary(ctx, rangeSince(hours))
 }
 
-// TrendByDay 按日趋势。
+// TrendByDay 近 N 个本地日的按日趋势（含今天）：完整历史日读聚合表，当天实时。
+// 口径从「滚动 N*24h 窗」改为日历日——近 7 日 = 今天 + 前 6 个完整日，首点不再是半天数据。
 func (s *StatsService) TrendByDay(ctx context.Context, days int) ([]repository.TrendPoint, error) {
 	if days <= 0 {
 		days = 7
@@ -283,7 +287,28 @@ func (s *StatsService) TrendByDay(ctx context.Context, days int) ([]repository.T
 	if days > 400 {
 		days = 400
 	}
-	return s.repo.TrendByDay(ctx, time.Now().AddDate(0, 0, -days))
+	now := time.Now()
+	today := repository.DayBucketOf(now)
+	rows, err := s.daily.ListDays(ctx, today-int64(days-1), today-1)
+	if err != nil {
+		return nil, err
+	}
+	points := make([]repository.TrendPoint, 0, len(rows)+1)
+	for _, r := range rows {
+		points = append(points, repository.TrendPoint{
+			Date:        r.Date,
+			Requests:    r.Requests,
+			TotalTokens: r.PromptTokens + r.CompletionTokens,
+			ErrorReqs:   r.ErrorRequests,
+			CostUSD:     r.CostUSD,
+		})
+	}
+	// 当天实时（聚合表的当天行最多滞后一个聚合周期，这里始终以明细为准）
+	live, err := s.repo.TrendByDay(ctx, startOfDay(now))
+	if err != nil {
+		return nil, err
+	}
+	return append(points, live...), nil
 }
 
 // TrendByBucket 按分钟/小时分桶趋势（bucketSec 为桶宽秒数）。
@@ -326,7 +351,8 @@ func (s *StatsService) ByModelFlex(ctx context.Context, sinceSec int64, hours in
 	return s.repo.GroupByModel(ctx, sinceOrRange(sinceSec, hours))
 }
 
-// TrendByDayModel 按日 × 模型聚合 token 用量。
+// TrendByDayModel 近 N 个本地日的按日 × 模型 token 趋势（含今天）：完整历史日读
+// 日 × 模型聚合表，当天实时。日历日口径，与 TrendByDay 一致。
 func (s *StatsService) TrendByDayModel(ctx context.Context, days int) ([]repository.ModelDayPoint, error) {
 	if days <= 0 {
 		days = 7
@@ -334,7 +360,25 @@ func (s *StatsService) TrendByDayModel(ctx context.Context, days int) ([]reposit
 	if days > 400 {
 		days = 400
 	}
-	return s.repo.TrendByDayModel(ctx, time.Now().AddDate(0, 0, -days))
+	now := time.Now()
+	today := repository.DayBucketOf(now)
+	rows, err := s.daily.ListModelDays(ctx, today-int64(days-1), today-1)
+	if err != nil {
+		return nil, err
+	}
+	points := make([]repository.ModelDayPoint, 0, len(rows)+8)
+	for _, r := range rows {
+		points = append(points, repository.ModelDayPoint{
+			Date:        r.Date,
+			Model:       r.Model,
+			TotalTokens: r.PromptTokens + r.CompletionTokens,
+		})
+	}
+	live, err := s.repo.TrendByDayModel(ctx, startOfDay(now))
+	if err != nil {
+		return nil, err
+	}
+	return append(points, live...), nil
 }
 
 // LiveSessions 最近活跃会话聚合（会话统计覆盖全量历史，limit 为返回组数上限）。
@@ -354,11 +398,36 @@ type LifetimeStat struct {
 }
 
 // Lifetime 全历史累计统计：总 token、峰值日、最长单次耗时、连续使用天数。
+// 完整历史日读聚合表（封存行不随明细清理缩水），仅当天实时查明细。
 func (s *StatsService) Lifetime(ctx context.Context) (*LifetimeStat, error) {
-	days, err := s.repo.DailyUsage(ctx, time.Time{})
+	now := time.Now()
+	today := repository.DayBucketOf(now)
+	rows, err := s.daily.ListDays(ctx, 0, today-1)
 	if err != nil {
 		return nil, err
 	}
+	days := make([]repository.DayUsage, 0, len(rows)+1)
+	for _, r := range rows {
+		if r.Requests <= 0 {
+			continue // 空日不计活跃天（聚合表不产生空行，防御残留数据）
+		}
+		days = append(days, repository.DayUsage{
+			Date:          r.Date,
+			Requests:      r.Requests,
+			TotalTokens:   r.PromptTokens + r.CompletionTokens,
+			MaxDurationMS: r.MaxDurationMS,
+		})
+	}
+	// 当天实时（聚合表的当天行最多滞后一个聚合周期，这里始终以明细为准）
+	live, err := s.repo.DailyUsage(ctx, startOfDay(now))
+	if err != nil {
+		return nil, err
+	}
+	return lifetimeFromDays(append(days, live...)), nil
+}
+
+// lifetimeFromDays 由按日使用量推导累计统计（days 须按日期升序）。
+func lifetimeFromDays(days []repository.DayUsage) *LifetimeStat {
 	st := &LifetimeStat{}
 	var streak, maxStreak int
 	var prev time.Time
@@ -396,5 +465,5 @@ func (s *StatsService) Lifetime(ctx context.Context) (*LifetimeStat, error) {
 			st.CurrentStreak = streak
 		}
 	}
-	return st, nil
+	return st
 }

@@ -60,6 +60,23 @@ func (s *ChannelService) SetBalanceKindResolver(f func(baseURL string) provider.
 	s.balKind = f
 }
 
+// SetBalanceCookieProvider 注入网页凭证提供方（当前供 MiMo 余额查询取会话 Cookie）。
+func (s *ChannelService) SetBalanceCookieProvider(f func(ctx context.Context) (string, error)) {
+	if f == nil {
+		return
+	}
+	s.balMu.Lock()
+	defer s.balMu.Unlock()
+	s.balCookie = f
+}
+
+// InvalidateBalances 清空全部余额缓存（Cookie 等凭证变化后，下次查询立即用新值）。
+func (s *ChannelService) InvalidateBalances() {
+	s.balMu.Lock()
+	s.balCache = map[int64]balanceCacheEntry{}
+	s.balMu.Unlock()
+}
+
 // balInvalidate 渠道更新/删除后清掉对应缓存（api_key 可能已变化）。
 func (s *ChannelService) balInvalidate(id int64) {
 	s.balMu.Lock()
@@ -133,7 +150,26 @@ func (s *ChannelService) fetchBalance(ctx context.Context, client *provider.Bala
 	entry := BalanceEntry{
 		ChannelID: ch.ID, ChannelName: ch.Name, Provider: kind, Supported: true, FetchedAt: time.Now(),
 	}
-	info, err := client.Fetch(ctx, kind, ch.BaseURL, ch.APIKey)
+	// MiMo 走网页会话 Cookie 鉴权，凭证由设置页维护；取不到凭证直接按失败处理
+	cookie := ""
+	if kind == provider.BalanceProviderMiMo {
+		s.balMu.Lock()
+		providerFn := s.balCookie
+		s.balMu.Unlock()
+		if providerFn == nil {
+			entry.Error = "未配置 MiMo 网页 Cookie，请在 设置 → MiMo 余额凭证 中填写"
+			s.cacheBalance(ch.ID, entry, true)
+			return entry
+		}
+		c, err := providerFn(ctx)
+		if err != nil {
+			entry.Error = "读取 MiMo 凭证失败: " + err.Error()
+			s.cacheBalance(ch.ID, entry, true)
+			return entry
+		}
+		cookie = c
+	}
+	info, err := client.Fetch(ctx, kind, ch.BaseURL, ch.APIKey, cookie)
 	switch {
 	case err != nil:
 		entry.Error = err.Error()
@@ -149,16 +185,20 @@ func (s *ChannelService) fetchBalance(ctx context.Context, client *provider.Bala
 		logger.L("channel").Info("balance fetched",
 			"channel", ch.Name, "currency", info.Currency, "total", info.Total)
 	}
+	s.cacheBalance(ch.ID, entry, err != nil)
+	return entry
+}
 
+// cacheBalance 写入余额缓存：失败短缓存防超时风暴，成功长缓存。
+func (s *ChannelService) cacheBalance(id int64, entry BalanceEntry, failed bool) {
 	ttl := balanceTTL
-	if err != nil {
+	if failed {
 		ttl = balanceErrTTL
 	}
 	s.balMu.Lock()
 	if s.balCache == nil {
 		s.balCache = map[int64]balanceCacheEntry{}
 	}
-	s.balCache[ch.ID] = balanceCacheEntry{entry: entry, expires: time.Now().Add(ttl)}
+	s.balCache[id] = balanceCacheEntry{entry: entry, expires: time.Now().Add(ttl)}
 	s.balMu.Unlock()
-	return entry
 }

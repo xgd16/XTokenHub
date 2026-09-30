@@ -27,6 +27,8 @@ type Deps struct {
 	WS             *admin.WSHandler
 	SessionHeaders *admin.SessionHeaderConfigHandler
 	Pricing        *admin.PricingHandler
+	DataSettings   *admin.DataSettingsHandler
+	MimoSettings   *admin.MimoSettingsHandler
 	ReasonRewrites *admin.ReasoningRewriteHandler
 	Gateway        *gwhandler.Handler
 	WebFS          fs.FS // 前端产物（可为 nil：仅 API）
@@ -88,6 +90,11 @@ func Register(engine *gin.Engine, d *Deps) {
 		api.DELETE("/settings/prices/:id", d.Pricing.DeletePrice)
 		api.GET("/settings/billing", d.Pricing.GetBilling)
 		api.PUT("/settings/billing", d.Pricing.UpdateBilling)
+		api.GET("/settings/data", d.DataSettings.Get)
+		api.PUT("/settings/data", d.DataSettings.Update)
+		api.POST("/settings/data/aggregate/rebuild", d.DataSettings.RebuildAggregate)
+		api.GET("/settings/mimo", d.MimoSettings.Get)
+		api.PUT("/settings/mimo", d.MimoSettings.Update)
 		api.GET("/reasoning-rewrites", d.ReasonRewrites.List)
 		api.POST("/reasoning-rewrites", d.ReasonRewrites.Create)
 		api.GET("/reasoning-rewrites/:id", d.ReasonRewrites.Get)
