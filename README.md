@@ -38,6 +38,7 @@ Bring together upstream LLM provider APIs as channels, expose standardized proto
 - **🔄 Protocol conversion** — Exposes OpenAI (`/v1/chat/completions`, `/v1/responses`) and Anthropic (`/v1/messages`) endpoints simultaneously; when inbound and upstream protocols differ, requests are converted automatically. When they match, traffic is passed through natively with zero conversion, preserving tool calls, multimodal payloads, and other full capabilities;
 - **💰 Cost tracking & spend forecast** — Every request is priced instantly using the upstream's own usage convention (OpenAI and Anthropic bill cache differently), and the dashboard shows today's / this month's spend plus a **projected month-end figure**. The price table syncs from LiteLLM's public data in one click (~2,900 models) and accepts manual overrides, with optional USD/CNY display;
 - **🧾 Gateway keys & per-caller stats** — Issue `sk-xt-*` gateway keys to different clients and aggregate request count and tokens per key, so you always know who consumes the most;
+- **🧠 Shared agent memory bank** — Cross-session long-term memory: standalone `/memory/v1` API + MCP tools, Chinese-friendly full-text search (FTS5 + n-gram, no vectors), namespace classification with one-click LLM classification in the console, plus a relationship graph view;
 - **📦 Single-binary self-hosting** — The frontend is embedded via go:embed; `make build` produces one static binary (zero CGO). Copy it to any Linux/macOS machine and run.
 
 **Tech stack**: Backend Go + Gin + GORM + SQLite (pure-Go driver glebarez/sqlite) + Viper + gorilla/websocket; frontend React 19 + TypeScript + Ant Design 6 + Vite. Every module has unit tests — `go test ./... -race` all green, 87.6% statement coverage.
@@ -132,15 +133,17 @@ Off-peak pricing is expressed as the row's **peak window** (everything else is o
 <weekdays>;<span>[,<span>...]
 ```
 
-- Weekdays: `1`=Monday … `7`=Sunday, supporting ranges and lists — `1-5`, `1,3,5`, `6-7`.
+- Weekdays: `1`=Monday … `7`=Sunday, supporting ranges and lists — `1-5`, `1,3,5`, `6-7`. Two holiday tokens join them (case-insensitive): `!H` — dates inside a Chinese statutory-holiday block (the whole State Council rest period, shifted rest days included) are off-peak **all day**; `W` — shifted workdays (weekend days worked to make up a holiday) count as matching the weekday set.
 - Spans: `HH:MM-HH:MM`, comma-separated; the end must be later than the start and **must not wrap past midnight** (off-peak is expressed by listing the peak windows, so wrapping is never needed).
 - Evaluation is always in **Beijing time (UTC+8)**, independent of the server timezone.
 
-DeepSeek's published rule (weekdays 09:00–12:00 and 14:00–18:00 are peak) is:
+DeepSeek's published rule (weekdays 09:00–12:00 and 14:00–18:00 are peak; holidays, weekends included, are off-peak all day) is:
 
 ```
-1-5;09:00-12:00,14:00-18:00
+1-5,!H;09:00-12:00,14:00-18:00
 ```
+
+The `!H` / `W` tokens are judged against a **holiday calendar** synced from a public Chinese holiday API (each year's holiday/shifted-workday dates, kept in the `holiday_dates` table and refreshed on a timer — see `holiday.*` below). Rules without the tokens behave exactly as before; when the calendar holds no data yet, the tokens fall back to plain weekday judging.
 
 Settings' price editor has an "apply DeepSeek template" button for this. Leaving an off-peak rate at 0 falls back to the peak rate (the period is still recorded).
 
@@ -190,6 +193,8 @@ PUT    /api/v1/settings/prices/:id    Edit a price (marks the row manual so sync
 DELETE /api/v1/settings/prices/:id
 GET    /api/v1/settings/billing       Billing display settings (currency / rate / monthly budget)
 PUT    /api/v1/settings/billing
+GET    /api/v1/settings/holidays      Holiday calendar for a year (?year=YYYY) + sync status
+POST   /api/v1/settings/holidays/sync Sync the holiday calendar now
 GET    /healthz
 ```
 
@@ -232,6 +237,38 @@ curl http://localhost:8080/v1/messages \
 - Detection uses only the host (e.g. `api.deepseek.com`) — paths are ignored to avoid misjudging relays whose path mentions a provider name; BaseURLs with `/v1` or `/anthropic` mount segments are stripped to the main domain root for the query;
 - Results carry a 5-minute TTL cache (short 1-minute cache on failure); successful fetches refresh live via WS `channel.balance_updated`; updating/deleting a channel invalidates the cache;
 - Zhipu Coding plans (window percentage), Xiaomi MiMo (Cookie auth only), and OpenCode Go/Zen (no public API) are not yet supported — see "Known Limitations".
+
+## Agent Memory Bank
+
+A **shared long-term memory** for every AI agent talking to the gateway: write down conclusions, decisions, conventions and lessons worth keeping across development/execution tasks — any agent can recall them later. Zero vector models; plain SQLite (FTS5 + an app-side CJK n-gram channel).
+
+- **Standalone memory API** (`/memory/v1/*`, same auth headers as the gateway): add / search / update / soft-delete / relation links / graph / stats; same-content writes within a namespace are deduplicated (`duplicated: true`); `supersedes` retires old entries without deleting them;
+- **Namespace classification**: writers pick the `namespace` explicitly (auto-created when new), or leave it uncategorized; the console's one-click classifier routes uncategorized entries into namespaces using a configurable channel + model (LLM judgment, no embeddings);
+- **Chinese-friendly full-text search**: FTS5 plus an app-side n-gram channel (overlapping CJK bigrams + ASCII words); 2-character Chinese queries match reliably, single characters fall back to LIKE; ranking blends BM25 relevance × recency × importance × access boost (hits raise their own heat); results carry per-namespace hit facets;
+- **MCP endpoint**: `POST /mcp` (Streamable HTTP, stateless) exposing `memory_add / memory_search / memory_get / memory_update / memory_forget / memory_link / memory_namespaces`;
+- **Console "Memories" page**: list (search / filters / batch-move / pin / delete) + **relationship graph** (SVG force-directed, nodes colored by namespace, edges typed related/supersedes/conflicts/derived_from) + namespace management (rename / merge / delete / describe).
+
+### Writing and searching
+
+```bash
+# Add (explicit namespace; duplicate content is idempotent with duplicated=true)
+curl -s $BASE/memory/v1/memories \
+  -H "Authorization: Bearer sk-xt-..." -H 'Content-Type: application/json' \
+  -d '{"content":"Payment callbacks must be idempotent; replayed notices return success.",
+       "namespace":"payment","kind":"convention","tags":["payment"],"importance":4}'
+
+# Search (CJK substrings match; returns a blended score plus namespace facets)
+curl -s "$BASE/memory/v1/memories/search?q=idempotent" -H "Authorization: Bearer sk-xt-..."
+```
+
+### Mount the MCP in Claude Code
+
+```bash
+claude mcp add --transport http xtokenhub-memory http://127.0.0.1:9192/mcp \
+  --header "Authorization: Bearer sk-xt-..."
+```
+
+See `memory.*` in `configs/config.yaml` (switch, auth, result limits, classifier batch); pick the **classifier channel + model** on the console's "Memories → Classification Settings" (channels speaking chat_completions or messages).
 
 ## Quick Start
 
@@ -326,6 +363,11 @@ Note: the SQLite file doesn't shrink automatically after cleanup (deletion only 
 | `pricing.sync_interval_hours` | `24` | Sync interval in hours (>=1) |
 | `pricing.source_url` | empty | Price table URL; empty uses the built-in LiteLLM public table |
 | `pricing.timeout_seconds` | `20` | Price table fetch timeout in seconds (>=1) |
+| `holiday.enabled` | `true` | Enable the holiday calendar (the `!H` / `W` peak-window tokens judge against it) |
+| `holiday.auto_sync` | `true` | Sync the holiday calendar on a timer |
+| `holiday.sync_interval_hours` | `168` | Sync interval in hours (>=1); new yearly arrangements are picked up within a week of publication |
+| `holiday.source_url` | empty | Holiday API URL with a `{year}` placeholder (appended as a path segment when absent); empty uses the built-in holiday-cn calendar (GitHub raw, sourced from State Council notices; timor.tech format is also parsed) |
+| `holiday.timeout_seconds` | `20` | Holiday calendar fetch timeout in seconds (>=1) |
 | `billing.display_currency` | `USD` | Default display currency, `USD` / `CNY` (seeded on first init only; Settings wins afterwards) |
 | `billing.usd_cny_rate` | `0` | USD→CNY rate, maintained by hand (required to display CNY, and to convert CNY-priced model rows) |
 | `billing.monthly_budget_usd` | `0` | Monthly budget; `0` = none. Only drives the forecast overrun hint, never blocks requests |

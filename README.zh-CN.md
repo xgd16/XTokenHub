@@ -38,6 +38,7 @@
 - **🔄 协议转换** —— 对外同时暴露 OpenAI（`/v1/chat/completions`、`/v1/responses`）与 Anthropic（`/v1/messages`）三端点，入站与上游协议不一致时自动转换；一致则零转换原生透传，保住工具调用、多模态等完整能力；
 - **💰 花费统计与预计** —— 每条请求按上游 usage 口径即时计费（区分 OpenAI / Anthropic 的缓存计费差异），仪表盘展示今日/本月已花费与**本月预计花费**，价格表可从 LiteLLM 公开数据一键同步（约 2900 个模型）并支持手工覆盖，支持 USD/CNY 双币展示；
 - **🧾 网关密钥与按调用方统计** —— 签发 `sk-xt-*` 网关密钥分发给不同客户端，按密钥聚合请求数与 token，谁用得多一目了然；
+- **🧠 Agent 共享记忆库** —— 跨会话长期记忆：独立 `/memory/v1` API + MCP 工具，中文全文检索（FTS5 + n-gram，无向量），命名空间归类 + 控制台一键 LLM 分类，控制台含记忆关系图；
 - **📦 单二进制自托管** —— 前端经 go:embed 内嵌，`make build` 产出一个静态二进制（零 CGO），拷到任何 Linux/macOS 机器即可跑。
 
 **技术栈**：后端 Go + Gin + GORM + SQLite（纯 Go 驱动 glebarez/sqlite）+ Viper + gorilla/websocket；前端 React 19 + TypeScript + Ant Design 6 + Vite；每个模块配单元测试，`go test ./... -race` 全绿，语句覆盖率 87.6%。
@@ -132,15 +133,17 @@ internal/tests/      全部单元测试（按模块镜像组织，外部测试�
 <星期>;<时段>[,<时段>...]
 ```
 
-- 星期：`1`=周一 … `7`=周日，支持区间与列表，如 `1-5`、`1,3,5`、`6-7`；
+- 星期：`1`=周一 … `7`=周日，支持区间与列表，如 `1-5`、`1,3,5`、`6-7`。另可附加两个节假日记号（大小写不敏感）：`!H` —— 中国法定节假日（整个国务院放假期，含调休连休）**全天**按空闲计价；`W` —— 调休补班日（周末但上班）视为命中星期集合；
 - 时段：`HH:MM-HH:MM`，多个用逗号分隔；结束须晚于开始，**不支持跨零点**（空闲时段用「列出高峰窗口」表达，无需环绕）；
 - 判定时区固定为**北京时间（UTC+8）**，不随服务器时区变化。
 
-DeepSeek 官方规则（工作日 9:00–12:00、14:00–18:00 为高峰）即：
+DeepSeek 官方规则（工作日 9:00–12:00、14:00–18:00 为高峰，节假日与周末全天空闲）即：
 
 ```
-1-5;09:00-12:00,14:00-18:00
+1-5,!H;09:00-12:00,14:00-18:00
 ```
+
+`!H` / `W` 记号依据**节假日年历**判定：年历从公开节假日接口自动同步（逐年标注放假/调休补班，存 `holiday_dates` 表并定时刷新，见下文 `holiday.*` 配置）。不带记号的规则行为与从前完全一致；年历还没有数据时，记号退化为按星期判定。
 
 设置页编辑价格时可点「套用 DeepSeek 模板」一键填入。空闲时段的 off-peak 费率留 0 表示回退高峰费率（时段仍会记录）。
 
@@ -189,6 +192,8 @@ PUT    /api/v1/settings/prices/:id    编辑价格（改后标记为手工配置
 DELETE /api/v1/settings/prices/:id
 GET    /api/v1/settings/billing       计费展示设置（币种/汇率/月度预算）
 PUT    /api/v1/settings/billing
+GET    /api/v1/settings/holidays      节假日年历（?year=YYYY）+ 同步状态
+POST   /api/v1/settings/holidays/sync 立即同步节假日年历
 GET    /healthz
 ```
 
@@ -231,6 +236,38 @@ curl http://localhost:8080/v1/messages \
 - 识别规则只看 host（如 `api.deepseek.com`），路径不参与——避免把路径含厂家名的中转站误判；BaseURL 带 `/v1` 或 `/anthropic` 挂载段均自动剥到主域名根路径查询；
 - 结果带 5 分钟 TTL 缓存（失败短缓存 1 分钟），拉取成功经 WS `channel.balance_updated` 实时刷新；渠道更新/删除即失效缓存；
 - 智谱 Coding 套餐（窗口百分比）、小米 MiMo（仅 Cookie 鉴权）与 OpenCode Go/Zen（无公开接口）暂不支持，见「已知边界」。
+
+## 记忆库（Agent 共享记忆）
+
+给接入网关的 AI Agent 一个**跨会话、跨工具的共享长期记忆**：开发/执行任务中值得记住的结论、决策、约定与踩坑经验写进来，之后任何 agent 都能检索到。零向量模型，纯 SQLite（FTS5 + 中文 n-gram 双通道）。
+
+- **独立记忆 API**（`/memory/v1/*`，鉴权头同网关）：写入 / 检索 / 更新 / 软删除 / 关系边 / 图 / 统计；同命名空间同内容自动去重（返回 `duplicated`）；`supersedes` 一键替代（旧记忆置失效不删除，历史可追溯）；
+- **命名空间归类**：写入时用 `namespace` 显式指定归属（不存在自动创建），不指定进「未分类」；控制台「一键分类」用可配置的渠道 + 模型把未分类记忆按主题分流到命名空间（LLM 判定）；
+- **中文全文检索**：FTS5 + 应用层 n-gram 双通道（中文重叠 bigram + ASCII 词），两字中文词可靠命中，单字查询走 LIKE 兜底；排序 = BM25 相关性 × 时间衰减 × 重要度 × 访问强化（命中自动累计热度）；返回值附**命名空间命中分布**；
+- **MCP 接入**：`POST /mcp`（Streamable HTTP，无状态）暴露 `memory_add / memory_search / memory_get / memory_update / memory_forget / memory_link / memory_namespaces` 七个工具；
+- **控制台「记忆库」页**：列表（搜索 / 筛选 / 批量移动命名空间 / 置顶 / 删除）+ **记忆关系图**（SVG 力导向图，节点按命名空间着色，边为 related/supersedes/conflicts/derived_from）+ 命名空间管理（改名 / 合并 / 删除 / 描述）。
+
+### 写入与检索
+
+```bash
+# 写入（显式指定命名空间；同内容重复写入幂等返回 duplicated=true）
+curl -s $BASE/memory/v1/memories \
+  -H "Authorization: Bearer sk-xt-..." -H 'Content-Type: application/json' \
+  -d '{"content":"支付回调必须做幂等校验，重复通知直接返回成功。",
+       "namespace":"支付回调","kind":"convention","tags":["支付"],"importance":4}'
+
+# 检索（中文子串可命中；返回综合分与命名空间分布）
+curl -s "$BASE/memory/v1/memories/search?q=幂等" -H "Authorization: Bearer sk-xt-..."
+```
+
+### Claude Code 挂载 MCP
+
+```bash
+claude mcp add --transport http xtokenhub-memory http://127.0.0.1:9192/mcp \
+  --header "Authorization: Bearer sk-xt-..."
+```
+
+配置项见 `configs/config.yaml` 的 `memory.*`（开关、鉴权、检索条数、分类批大小）；**分类用的渠道与模型**在控制台「记忆库 → 分类设置」里选，支持 chat_completions / messages 协议的渠道。
 
 ## 快速开始
 
@@ -325,6 +362,11 @@ systemctl is-enabled xtokenhub        # 是否开机自启
 | `pricing.sync_interval_hours` | `24` | 同步周期（小时，>=1） |
 | `pricing.source_url` | 空 | 价格表地址；留空使用内置 LiteLLM 公开价格表 |
 | `pricing.timeout_seconds` | `20` | 价格表拉取超时（秒，>=1） |
+| `holiday.enabled` | `true` | 是否启用节假日年历（峰谷规则 `!H` / `W` 记号的判定依据） |
+| `holiday.auto_sync` | `true` | 是否定时同步节假日年历 |
+| `holiday.sync_interval_hours` | `168` | 同步周期（小时，>=1）；新年安排公布后一周内自动拿到 |
+| `holiday.source_url` | 空 | 年历接口地址，`{year}` 为年份占位符（不含占位符时在末尾追加）；留空使用内置 holiday-cn 年历（GitHub raw，源自国务院公告；timor.tech 格式同样兼容） |
+| `holiday.timeout_seconds` | `20` | 年历拉取超时（秒，>=1） |
 | `billing.display_currency` | `USD` | 默认展示币种 `USD` / `CNY`（仅首次初始化入库，之后以设置页为准） |
 | `billing.usd_cny_rate` | `0` | USD→CNY 汇率，手工维护（展示 CNY、以及折算人民币计价的价格行都需要） |
 | `billing.monthly_budget_usd` | `0` | 月度预算，`0` = 不设；仅用于预测的超支提示，不拦截请求 |
