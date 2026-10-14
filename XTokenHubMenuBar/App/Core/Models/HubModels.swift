@@ -22,6 +22,13 @@ struct PageData<T: Decodable & Sendable>: Decodable, Sendable {
     }
 }
 
+/// GET /api/v1/settings/holidays?year=YYYY 的 data 部分:某年标注 + 同步状态。
+/// status 仅设置页展示,这里不建模(JSONDecoder 会忽略多余键)。
+struct HolidayYear: Decodable, Sendable {
+    let year: Int
+    let items: [HolidayDateItem]
+}
+
 // MARK: - 统计接口模型(与 internal/repository/repository.go 的 json 标签对齐)
 
 /// GET /api/v1/stats/summary — 时间窗内汇总。
@@ -440,13 +447,14 @@ struct ModelPrice: Codable, Equatable, Identifiable, Sendable {
     var peakRule: PeakWindow? { PeakWindow(peakWindow) }
 
     /// at 时刻生效费率(原币种/token)。口径镜像后端 Rates 的时段与缓存回退;
-    /// 展示场景不含长上下文 Above 分档。
-    func effectiveRates(at date: Date) -> (input: Double, output: Double, cacheRead: Double, cacheWrite: Double) {
+    /// 展示场景不含长上下文 Above 分档。带 `!H` / `W` 记号的规则按节假日年历
+    /// 判定(`calendar` 缺省取进程内注入的年历,无年历时退化为按星期)。
+    func effectiveRates(at date: Date, calendar: HolidayCalendar? = HolidaySourceStore.shared.calendar) -> (input: Double, output: Double, cacheRead: Double, cacheWrite: Double) {
         var input = inputCostPerToken
         var output = outputCostPerToken
         var read = cacheReadCostPerToken
         var write = cacheWriteCostPerToken
-        if let rule = peakRule, !rule.isPeak(at: date) {
+        if let rule = peakRule, !rule.isPeak(at: date, calendar: calendar) {
             if offPeakInputCostPerToken > 0 { input = offPeakInputCostPerToken }
             if offPeakOutputCostPerToken > 0 { output = offPeakOutputCostPerToken }
             read = offPeakCacheReadCostPerToken

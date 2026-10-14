@@ -48,6 +48,8 @@ final class HubStore {
     private(set) var balances: [Int64: ChannelBalance] = [:]
     /// 配置了峰谷时段价的价目行(为空时弹出层/小组件/通知都不出现峰谷模块)。
     private(set) var peakPrices: [ModelPrice] = []
+    /// 节假日年历(`!H` / `W` 记号的判定依据):挂载/刷新时拉取本年(年底附近含明年)并缓存。
+    private(set) var holidayCalendar = HolidayCalendar()
     /// 今日花费与预测(随快速刷新走)。
     private(set) var costToday: CostForecast?
     /// 本月花费与预测(随慢速刷新走)。
@@ -78,6 +80,8 @@ final class HubStore {
     private let peakNotifier = PeakNotifier()
     /// 价目低频重拉的轮询计数(每 10 分钟一次)。
     private var peakTick = 0
+    /// 年历上次拉取时刻(年历一年一变,轮询里最多一天重拉一次)。
+    private var lastHolidayFetch: Date?
     /// 把当前数据交给 Widget 的本机回环端点。
     private let widgetBridge = WidgetBridgeServer()
     private let maxLiveRows = 50
@@ -87,6 +91,13 @@ final class HubStore {
         started = true
         self.settings = settings
         settings.onChange = { [weak self] in self?.scheduleRebuild() }
+        // 小组件余额渠道在设置页切换:立即重推桥接载荷,小组件无需等下一次轮询
+        settings.onWidgetBalanceChange = { [weak self] _ in self?.syncWidgetData() }
+        // 年历先用本地缓存兜底注入(离线启动也能判对),挂载后再拉新的一份。
+        if let cached = loadHolidayCache() {
+            holidayCalendar = cached
+            HolidaySourceStore.shared.install(cached)
+        }
         widgetBridge.start()
         rebuildIfNeeded()
         periodicTask = Task { [weak self] in
@@ -98,10 +109,11 @@ final class HubStore {
                 await self.fetchCallers()
                 // 余额服务端有 5 分钟 TTL,轮询基本命中缓存
                 await self.fetchBalances()
-                // 价目变更不频繁,10 分钟重拉一次足以覆盖设置页的编辑
+                // 价目变更不频繁,10 分钟重拉一次足以覆盖设置页的编辑;年历同批检查(内部一天限一次)
                 self.peakTick += 1
                 if self.peakTick >= 10 {
                     self.peakTick = 0
+                    await self.fetchHolidaysIfNeeded()
                     await self.fetchPeakPrices()
                 }
             }
@@ -329,15 +341,66 @@ final class HubStore {
         guard let list = try? await api.peakPrices() else { return }
         peakPrices = list.filter { $0.peakRule != nil }
         if settings?.peakNotifyEnabled == true {
-            await peakNotifier.reschedule(peakPrices)
+            await peakNotifier.reschedule(peakPrices, calendar: holidayCalendar)
         }
     }
+
+    /// 节假日年历(`!H` / `W` 记号的判定依据):拉取本年(年底附近含明年)并缓存。
+    ///
+    /// 逐年拉取、按年替换合并;某年拉取失败或为空(安排未公布)保留旧标注,
+    /// 与后端「保留旧标注等下轮同步」同口径。成功后注入进程内年历(判定缺省值用)
+    /// 并持久化到本地,离线重启也能判对。
+    private func fetchHolidays() async {
+        guard let api else { return }
+        var merged = holidayCalendar
+        var fetchedAny = false
+        for year in HolidayCalendar.years(coveringHorizonDays: HolidayCalendar.horizonDays) {
+            guard let items = try? await api.holidays(year: year), !items.isEmpty else { continue }
+            // 按年替换:先剔除该年旧标注,再并入新标注,别把另一年的数据冲掉。
+            let kept = merged.kinds.filter { !$0.key.hasPrefix("\(year)-") }
+            merged = HolidayCalendar(kinds: kept).merging(HolidayCalendar(items: items))
+            fetchedAny = true
+        }
+        guard fetchedAny else { return }
+        holidayCalendar = merged
+        HolidaySourceStore.shared.install(merged)
+        saveHolidayCache(merged)
+        lastHolidayFetch = Date()
+        // 年历会改变切换点(假期不切峰、补班照常切):已开峰谷通知时按新年历重排。
+        if settings?.peakNotifyEnabled == true {
+            await peakNotifier.reschedule(peakPrices, calendar: holidayCalendar)
+        }
+    }
+
+    /// 轮询用的年历检查:已有一份且 24 小时内拉过就不再拉(年历一年一变)。
+    private func fetchHolidaysIfNeeded() async {
+        if let last = lastHolidayFetch, Date().timeIntervalSince(last) < 86_400, !holidayCalendar.kinds.isEmpty {
+            return
+        }
+        await fetchHolidays()
+    }
+
+    /// 年历本地缓存(日期 → 标注),供离线启动先用旧年历兜底。
+    private func loadHolidayCache() -> HolidayCalendar? {
+        guard let raw = UserDefaults.standard.dictionary(forKey: Self.holidayCacheKey) as? [String: String] else {
+            return nil
+        }
+        let kinds = raw.compactMapValues { HolidayKind(rawValue: $0) }
+        return kinds.isEmpty ? nil : HolidayCalendar(kinds: kinds)
+    }
+
+    private func saveHolidayCache(_ calendar: HolidayCalendar) {
+        let raw = Dictionary(uniqueKeysWithValues: calendar.kinds.map { ($0.key, $0.value.rawValue) })
+        UserDefaults.standard.set(raw, forKey: Self.holidayCacheKey)
+    }
+
+    private static let holidayCacheKey = "hubHolidayCalendar"
 
     /// 设置页「峰谷切换通知」开关翻转:开启时补授权并立即重排,关闭时撤销。
     func handlePeakNotifyChange(_ enabled: Bool) async {
         if enabled {
             settings?.peakNotifyError = await peakNotifier.requestAuthorizationIfNeeded()
-            await peakNotifier.reschedule(peakPrices)
+            await peakNotifier.reschedule(peakPrices, calendar: holidayCalendar)
         } else {
             await peakNotifier.cancelAll()
         }
@@ -347,6 +410,8 @@ final class HubStore {
         guard let api else { return }
         // 计费设置先行：花费的展示币种/汇率依赖它，也让随后的 Widget 同步带上正确币种
         await fetchBilling()
+        // 年历先行：峰谷判定与切换点依赖它
+        await fetchHolidays()
         await refreshQuick()
         do {
             async let lifetimeTask = api.lifetime()
@@ -382,7 +447,10 @@ final class HubStore {
             costToday: costToday,
             modelTop: modelTop,
             channelBalances: Array(balances.values),
+            balanceChannelIDs: settings.widgetBalanceChannels.map { Array($0).sorted() },
             peakPrices: peakPrices,
+            // 节假日年历随载荷带给 Widget：离线也能判对 !H / W（未来 60 天的最小清单）。
+            holidays: holidayCalendar.entries(withinDays: HolidayCalendar.horizonDays),
             billingCurrency: billing?.displayCurrency ?? "USD",
             billingRate: billing?.usdRate ?? 0,
             generatedAt: Date()

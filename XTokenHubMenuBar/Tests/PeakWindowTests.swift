@@ -278,3 +278,133 @@ struct WidgetBridgePayloadTests {
         #expect(back.billingRate == 7.2)
     }
 }
+
+// MARK: - 节假日记号 !H / W(镜像 internal/tests/model/peak_window_holiday_test.go)
+
+/// 2026 国庆假期年历样本:10-01(周四)~10-07 放假,10-10(周六)调休补班。
+private let holidaySample = HolidayCalendar(items: [
+    HolidayDateItem(date: "2026-10-01", kind: "holiday"),
+    HolidayDateItem(date: "2026-10-02", kind: "holiday"),
+    HolidayDateItem(date: "2026-10-03", kind: "holiday"),
+    HolidayDateItem(date: "2026-10-04", kind: "holiday"),
+    HolidayDateItem(date: "2026-10-05", kind: "holiday"),
+    HolidayDateItem(date: "2026-10-06", kind: "holiday"),
+    HolidayDateItem(date: "2026-10-07", kind: "holiday"),
+    HolidayDateItem(date: "2026-10-10", kind: "workday"),
+])
+
+struct PeakWindowHolidayTests {
+    @Test func parsesHolidayTokens() {
+        for rule in [
+            "1-5,!H;09:00-12:00,14:00-18:00", // DeepSeek 口径:节假日全天空闲
+            "1-5,W;09:00-12:00,14:00-18:00",  // 补班日按工作日
+            "1-5,!H,W;09:00-12:00",           // 两个记号组合
+            "!H;00:00-23:59",                 // 只有记号、无星期
+            "1-5,!h;09:00-12:00",             // 小写容忍
+            "1-5,w;09:00-12:00",
+        ] {
+            #expect(PeakWindow(rule) != nil, "应能解析: \(rule)")
+        }
+        for rule in [
+            "1-5,!X;09:00-12:00", // 未知排除记号
+            "1-5,H;09:00-12:00",  // 少了 ! 也应非法(提示用 !H)
+        ] {
+            #expect(PeakWindow(rule) == nil, "应判非法: \(rule)")
+        }
+    }
+
+    @Test func skipHolidayTokenTreatsHolidayAsOffPeak() {
+        let withToken = try! #require(PeakWindow("1-5,!H;09:00-12:00,14:00-18:00"))
+        // 2026-10-01(周四)10:00 落在高峰窗口内,但放假全天空闲
+        #expect(withToken.period(at: bj(2026, 10, 1, 10, 0), calendar: holidaySample) == .offPeak)
+        #expect(withToken.period(at: bj(2026, 10, 1, 20, 0), calendar: holidaySample) == .offPeak)
+
+        // 未配 !H:维持原口径(按星期判定为高峰)
+        let noToken = try! #require(PeakWindow("1-5;09:00-12:00,14:00-18:00"))
+        #expect(noToken.period(at: bj(2026, 10, 1, 10, 0), calendar: holidaySample) == .peak)
+
+        // 普通工作日 2026-10-13(周二)不受影响
+        #expect(withToken.period(at: bj(2026, 10, 13, 10, 0), calendar: holidaySample) == .peak)
+    }
+
+    @Test func makeupWorkdayTokenTreatsShiftedSaturdayAsWorkday() {
+        let withToken = try! #require(PeakWindow("1-5,!H,W;09:00-12:00,14:00-18:00"))
+        // 2026-10-10(周六)是国庆后补班:白天按工作日计高峰,午休不计
+        #expect(withToken.period(at: bj(2026, 10, 10, 10, 0), calendar: holidaySample) == .peak)
+        #expect(withToken.period(at: bj(2026, 10, 10, 13, 0), calendar: holidaySample) == .offPeak)
+
+        // 未配 W:周末一律空闲
+        let noToken = try! #require(PeakWindow("1-5,!H;09:00-12:00,14:00-18:00"))
+        #expect(noToken.period(at: bj(2026, 10, 10, 10, 0), calendar: holidaySample) == .offPeak)
+
+        // 普通周六 2026-10-17 即使配了 W 也照常空闲
+        #expect(withToken.period(at: bj(2026, 10, 17, 10, 0), calendar: holidaySample) == .offPeak)
+    }
+
+    @Test func tokensFallBackToWeekdayWithoutCalendar() {
+        let window = try! #require(PeakWindow("1-5,!H,W;09:00-12:00,14:00-18:00"))
+        // 无年历(nil):放假日按普通周四判高峰、补班周六按周末判空闲(与后端退化口径一致)
+        #expect(window.period(at: bj(2026, 10, 1, 10, 0), calendar: nil) == .peak)
+        #expect(window.period(at: bj(2026, 10, 10, 10, 0), calendar: nil) == .offPeak)
+    }
+
+    @Test func nextSwitchSkipsLongHoliday() {
+        let window = try! #require(PeakWindow("1-5,!H;09:00-12:00,14:00-18:00"))
+        // 2026-09-30(周三)18:30 收盘后:10-01~10-07 放假全天空闲、不产生切换点,
+        // 下一次切换是假期结束后的 10-08(周四)09:00 转高峰。
+        let next = try! #require(window.nextSwitch(after: bj(2026, 9, 30, 18, 30), calendar: holidaySample))
+        #expect(next.at == bj(2026, 10, 8, 9, 0))
+        #expect(next.to == .peak)
+
+        // 假期内任意时刻:同样等到 10-08 09:00
+        let inside = try! #require(window.nextSwitch(after: bj(2026, 10, 2, 10, 0), calendar: holidaySample))
+        #expect(inside.at == bj(2026, 10, 8, 9, 0))
+    }
+
+    @Test func holidayCalendarRoundTripInBridgePayload() {
+        // 年历随桥载荷序列化:未来 60 天清单导出 → 消费端原样还原
+        let items = holidaySample.entries(withinDays: 60, from: bj(2026, 9, 28, 0, 0))
+        #expect(!items.isEmpty)
+        let restored = HolidayCalendar(items: items)
+        #expect(restored.kind(of: "2026-10-01") == .holiday)
+        #expect(restored.kind(of: "2026-10-10") == .workday)
+    }
+
+    @Test func eveSwitchLandsAtHolidayOnset() throws {
+        // 假期前一天的下一次切换应落在假期开始(转谷):假期前夜的收尾高峰窗口在 23:59
+        // 收尾(Go 的 [起,止) 语义下 23:59 起已是空闲),全天空闲的假期由此开始。
+        let window = try #require(PeakWindow("1-5,!H;09:00-23:59"))
+        let next = try #require(window.nextSwitch(after: bj(2026, 9, 30, 22, 0), calendar: holidaySample))
+        #expect(next.at == bj(2026, 9, 30, 23, 59))
+        #expect(next.to == .offPeak)
+
+        // 其后的切换跳过整个假期:落在节后首个工作日 10-08 的窗口起点(转高峰)
+        let afterEve = try #require(window.nextSwitch(after: next.at, calendar: holidaySample))
+        #expect(afterEve.at == bj(2026, 10, 8, 9, 0))
+        #expect(afterEve.to == .peak)
+
+        // DeepSeek 口径:假期前天下班(最后一个高峰窗口收尾)同样是一次转谷切换
+        let deepseek = try #require(PeakWindow("1-5,!H;09:00-12:00,14:00-18:00"))
+        let clockOff = try #require(deepseek.nextSwitch(after: bj(2026, 9, 30, 15, 0), calendar: holidaySample))
+        #expect(clockOff.at == bj(2026, 9, 30, 18, 0))
+        #expect(clockOff.to == .offPeak)
+    }
+
+    @Test func makeupWorkdaySwitchesMatchWorkday() throws {
+        // 补班日(10-10 周六)的切换与工作日一致:早晨 09:00 转高峰、午休 12:00 转空闲。
+        let window = try #require(PeakWindow("1-5,!H,W;09:00-12:00,14:00-18:00"))
+        let morning = try #require(window.nextSwitch(after: bj(2026, 10, 9, 20, 0), calendar: holidaySample))
+        #expect(morning.at == bj(2026, 10, 10, 9, 0))
+        #expect(morning.to == .peak)
+
+        let lunch = try #require(window.nextSwitch(after: bj(2026, 10, 10, 10, 0), calendar: holidaySample))
+        #expect(lunch.at == bj(2026, 10, 10, 12, 0))
+        #expect(lunch.to == .offPeak)
+
+        // 未配 W:补班周六不产生切换点,下一次切换跳到节后周一 09:00
+        let noToken = try #require(PeakWindow("1-5,!H;09:00-12:00,14:00-18:00"))
+        let skipped = try #require(noToken.nextSwitch(after: bj(2026, 10, 9, 20, 0), calendar: holidaySample))
+        #expect(skipped.at == bj(2026, 10, 12, 9, 0))
+        #expect(skipped.to == .peak)
+    }
+}

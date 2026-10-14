@@ -38,7 +38,8 @@ final class PeakNotifier {
     }
 
     /// 按价目重排通知(幂等)。开关开启时由 HubStore 在每次价目刷新后调用。
-    func reschedule(_ prices: [ModelPrice]) async {
+    /// `calendar` 供规则的 `!H` / `W` 记号判定节假日(切换点推算同口径)。
+    func reschedule(_ prices: [ModelPrice], calendar: HolidayCalendar) async {
         await cancelAll()
         guard !prices.isEmpty else { return }
 
@@ -48,9 +49,9 @@ final class PeakNotifier {
             // 未来 2 次切换:足以覆盖一个工作日的午休/收盘两跳,重排前不会耗尽
             var cursor = Date()
             for index in 0..<2 {
-                guard let next = rule.nextSwitch(after: cursor) else { break }
+                guard let next = rule.nextSwitch(after: cursor, calendar: calendar) else { break }
                 let content = UNMutableNotificationContent()
-                let text = Self.notificationContent(price: price, switchingTo: next.to, at: next.at)
+                let text = Self.notificationContent(price: price, switchingTo: next.to, at: next.at, calendar: calendar)
                 content.title = text.title
                 content.body = text.body
                 content.threadIdentifier = Self.idPrefix + price.model
@@ -73,9 +74,9 @@ final class PeakNotifier {
     }
 
     /// 通知文案(纯函数,单测覆盖)。费率按切换时刻的生效口径计算(含空闲回退)。
-    nonisolated static func notificationContent(price: ModelPrice, switchingTo period: PricePeriod, at date: Date) -> (title: String, body: String) {
+    nonisolated static func notificationContent(price: ModelPrice, switchingTo period: PricePeriod, at date: Date, calendar: HolidayCalendar? = nil) -> (title: String, body: String) {
         let title = "\(price.model) 转入\(period.label)"
-        let rates = price.effectiveRates(at: date)
+        let rates = price.effectiveRates(at: date, calendar: calendar)
         var body = "输入 \(MoneyFormatter.formatPerMillion(perToken: rates.input, currency: price.displayCurrency))/M"
             + " · 输出 \(MoneyFormatter.formatPerMillion(perToken: rates.output, currency: price.displayCurrency))/M"
         if period == .offPeak, let discount = price.offPeakDiscountPercent {

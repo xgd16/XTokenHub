@@ -14,8 +14,13 @@ struct WidgetBridgePayload: Codable, Sendable {
     var costToday: CostForecast?
     var modelTop: [GroupStat]
     var channelBalances: [ChannelBalance]
+    /// 设置里勾选可显示余额的渠道 id（nil = 未设置：全部显示；空数组 = 都不显示）。
+    var balanceChannelIDs: [Int64]? = nil
     /// 配置了峰谷时段价的价目行（为空时 Widget 不显示峰谷模块）。
     var peakPrices: [ModelPrice]
+    /// 节假日年历（未来 60 天内的 holiday/workday 日期清单），
+    /// Widget 判定 `!H` / `W` 记号用——离线也能判对。nil = 旧版主 App 未带，按无年历退化。
+    var holidays: [HolidayDateItem]? = nil
     /// 计费展示设置：花费按这个币种/汇率换算后展示（与主 App 面板同口径）。
     var billingCurrency: String
     var billingRate: Double

@@ -8,6 +8,7 @@ import WidgetKit
 /// 配置了峰谷时段价的模型再多一行 13pt（合计 128pt）。
 /// 四处间隙是弹性的，下限取 2pt 而非 6pt —— 只在内容撑高时让位，
 /// 有富余时照常均分吸收余量，这样带峰谷行也不会被挤出边界（无峰谷时 131pt / 有峰谷时 136pt）。
+/// 底部右栏在「缓存命中」与「勾选渠道余额」之间二选一，两者同构，不改变这份预算。
 struct SmallWidgetView: View {
     let entry: XTokenHubEntry
 
@@ -55,11 +56,18 @@ struct SmallWidgetView: View {
                         value: "\(summary.totalRequests)",
                         label: "请求"
                     )
-                    MetricStack(
-                        icon: "percent",
-                        value: TokenFormatter.percent(summary.cacheHitRate, digits: 0),
-                        label: "缓存命中"
-                    )
+                    // 余额与「缓存命中」共用同一块空间：Small 的高度预算是固定的，
+                    // 设置里勾选了有余额的渠道时展示余额（标签为渠道名，取勾选的第一个），
+                    // 一个都没勾或都查不到余额时回到缓存命中
+                    if let balance = entry.featuredBalance {
+                        BalanceStack(balance: balance)
+                    } else {
+                        MetricStack(
+                            icon: "percent",
+                            value: TokenFormatter.percent(summary.cacheHitRate, digits: 0),
+                            label: "缓存命中"
+                        )
+                    }
                 }
             }
             .padding(WD.inset)

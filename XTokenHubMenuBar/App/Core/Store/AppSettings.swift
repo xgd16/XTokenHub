@@ -46,6 +46,8 @@ final class AppSettings {
         static let legacyMode = "menuBarMode" // 旧版单选模式,迁移后废弃
         static let launchAtLogin = "launchAtLogin"
         static let peakNotify = "peakNotifyEnabled"
+        static let widgetBalanceChannels = "widgetBalanceChannels"
+        static let legacyWidgetBalanceChannel = "widgetBalanceChannelID" // 上一版单选,迁移后移除
     }
 
     /// 数据来源列表,至少保留一个(删空时回退默认)。
@@ -89,6 +91,28 @@ final class AppSettings {
     /// 通知授权失败/被拒的展示文案(由 HubStore 回写,设置页展示)。
     var peakNotifyError: String?
 
+    /// 小组件**允许显示余额的渠道**(多选,渠道 id)。
+    ///
+    /// - `nil` = 未设置:全部渠道都显示(含以后新增的),且只展示真的查到余额的;
+    /// - 显式集合(含空集):**只有勾选的渠道**才会出现在小组件上,空集 = 完全不显示。
+    var widgetBalanceChannels: Set<Int64>? {
+        didSet {
+            guard oldValue != widgetBalanceChannels else { return }
+            if let ids = widgetBalanceChannels {
+                UserDefaults.standard.set(
+                    ids.sorted().map(String.init).joined(separator: ","),
+                    forKey: Key.widgetBalanceChannels
+                )
+            } else {
+                UserDefaults.standard.removeObject(forKey: Key.widgetBalanceChannels)
+            }
+            onWidgetBalanceChange?(widgetBalanceChannels)
+        }
+    }
+
+    /// 余额渠道选择回调(HubStore 转给桥接服务:把新选择立刻推给小组件)。
+    var onWidgetBalanceChange: ((Set<Int64>?) -> Void)?
+
     /// 开关翻转回调(AppDelegate 转给 HubStore:补授权并立即重排/撤销)。
     var onPeakNotifyChange: ((Bool) -> Void)?
 
@@ -130,6 +154,18 @@ final class AppSettings {
 
         launchAtLogin = d.bool(forKey: Key.launchAtLogin) && SMAppService.mainApp.status == .enabled
         peakNotifyEnabled = d.bool(forKey: Key.peakNotify)
+
+        // 小组件余额渠道(多选):键不存在 = 未设置(全部显示)
+        if let raw = d.string(forKey: Key.widgetBalanceChannels) {
+            // 空串是合法值(显式「都不显示」),不能用 string(forKey:) 之外的缺省读法
+            widgetBalanceChannels = Set(raw.split(separator: ",").compactMap { Int64($0) })
+        } else if d.object(forKey: Key.legacyWidgetBalanceChannel) != nil {
+            // 上一版单选迁移成「只显示这一个渠道」
+            widgetBalanceChannels = [Int64(d.integer(forKey: Key.legacyWidgetBalanceChannel))]
+            d.removeObject(forKey: Key.legacyWidgetBalanceChannel)
+        } else {
+            widgetBalanceChannels = nil
+        }
     }
 
     // MARK: - 数据来源操作

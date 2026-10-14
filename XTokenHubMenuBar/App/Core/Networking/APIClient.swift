@@ -119,6 +119,15 @@ struct APIClient: Sendable {
         return data.items
     }
 
+    /// 节假日年历(settings/holidays?year=YYYY):某年标注。
+    /// 峰谷规则 `!H` / `W` 记号的判定依据,逐年拉取后合并(见 HolidayCalendar.years)。
+    func holidays(year: Int) async throws -> [HolidayDateItem] {
+        let data: HolidayYear = try await get("settings/holidays", [
+            URLQueryItem(name: "year", value: String(year)),
+        ])
+        return data.items
+    }
+
     // MARK: - 内部
 
     private func get<T: Decodable & Sendable>(_ path: String, _ query: [URLQueryItem]) async throws -> T {

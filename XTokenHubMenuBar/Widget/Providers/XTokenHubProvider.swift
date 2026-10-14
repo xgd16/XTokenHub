@@ -28,7 +28,7 @@ struct XTokenHubProvider: AppIntentTimelineProvider {
         if let lead = entry.peakLead(at: entry.date) {
             var cursor = entry.date
             for _ in 0..<2 {
-                guard let next = lead.rule.nextSwitch(after: cursor) else { break }
+                guard let next = lead.rule.nextSwitch(after: cursor, calendar: entry.holidayCalendar) else { break }
                 entries.append(XTokenHubEntry(date: next.at, snapshot: entry.snapshot))
                 cursor = next.at
             }

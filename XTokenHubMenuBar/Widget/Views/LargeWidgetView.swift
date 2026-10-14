@@ -3,9 +3,12 @@ import WidgetKit
 
 /// Large (358×358，约 326pt 可用高) — 完整概览。
 ///
-/// 垂直预算：标题 13 + 指标宫格 78 + 趋势标题 13 + 趋势图（弹性，至少 70）
-/// + 排行标题 13 + 排行 39 + 余额 13，加间隙共约 204pt；
-/// 余量全部给趋势图，因此不会再出现内容被挤出边界的情况。
+/// 垂直预算：标题 13 + 指标宫格 78 + 趋势标题 13 + 趋势图（弹性 40～150）
+/// + 排行标题 13 + 排行 39 + 余额 13（勾选超过 2 个渠道时两行 44），加间隙共约 196～273pt；
+/// 余量全部给趋势图，内容多时趋势图让位（见下方 minHeight 注释），因此不会被挤出边界。
+///
+/// 余额另有**水平**预算：单行 326pt 只放得下 2 个长名渠道，所以按每行 2 个换行，
+/// 溢出的用 `+N` 标注；chip 不加 `layoutPriority`，宽度不够时先截渠道名、金额保完整。
 struct LargeWidgetView: View {
     let entry: XTokenHubEntry
 
@@ -37,9 +40,11 @@ struct LargeWidgetView: View {
 
                 SectionLabel(text: "Token 用量趋势（24 小时）")
                 Spacer().frame(height: WD.labelGap)
-                // 弹性填充剩余空间，但设上限：模型/余额都为空时不会被拉成一条巨幅色块
+                // 弹性填充剩余空间(上限 150 防止无模型/无余额时拉成巨幅色块)。
+                // 下限 40 而非 70:勾选渠道多时余额占两行,趋势图要能把高度让出来,
+                // 否则固定内容 273 + 70 = 343pt > 326pt,底部会被静默裁掉
                 MiniTrendChart(values: entry.trendValues)
-                    .frame(minHeight: 70, maxHeight: 150)
+                    .frame(minHeight: 40, maxHeight: 150)
 
                 if !entry.modelTop.isEmpty {
                     gap()
@@ -51,9 +56,19 @@ struct LargeWidgetView: View {
                     )
                 }
 
-                if !entry.channelBalances.isEmpty {
+                // 余额：只显示设置里勾选的渠道，按 id 排序；每行 2 个、最多 2 行，溢出数并进标签
+                let (balanceRows, balanceOverflow) = entry.balanceRows()
+                if !balanceRows.isEmpty {
                     gap()
-                    ChannelBalanceRow(balances: entry.channelBalances)
+                    ForEach(Array(balanceRows.enumerated()), id: \.offset) { index, balances in
+                        ChannelBalanceRow(
+                            balances: balances,
+                            extraCount: index == balanceRows.count - 1 ? balanceOverflow : 0
+                        )
+                        if index < balanceRows.count - 1 {
+                            gap()
+                        }
+                    }
                 }
 
                 // 内容不足一屏时（如无模型/余额数据），余量留在底部而非拉伸图表
@@ -157,24 +172,26 @@ private struct ModelRankingSection: View {
 
 // MARK: - 渠道余额（单行）
 
-private struct ChannelBalanceRow: View {
+/// 余额单行：标签 + 最多几个 chip + 溢出数。
+///
+/// `internal` 而非 `private`：Tests/Widget 会拿它做**横向不溢出**断言
+/// （macOS 上越界是静默裁掉，高度测试发现不了）。
+struct ChannelBalanceRow: View {
+    /// 已由 `entry.balanceCandidates` 过滤排序：未勾选的渠道不会进来。
     let balances: [ChannelBalance]
-
-    /// 只列真的查到余额的渠道：查不到余额的项只有一个灰点加名字，
-    /// 既占宽度又不带信息，反而把有效项挤到被截断。
-    private var meaningful: [ChannelBalance] {
-        balances.filter { $0.balance != nil }
-    }
+    /// 本行之外还有多少个勾选渠道没显示（单行宽度有限），并进标签显示为 `余额+N`。
+    var extraCount = 0
 
     var body: some View {
-        if !meaningful.isEmpty {
+        if !balances.isEmpty {
             HStack(spacing: 10) {
-                Text("余额")
+                Text(extraCount > 0 ? "余额+\(extraCount)" : "余额")
                     .font(WD.captionFont)
                     .foregroundStyle(.tertiary)
+                    .lineLimit(1)
                     .layoutPriority(2)
 
-                ForEach(meaningful.prefix(3)) { balance in
+                ForEach(balances) { balance in
                     ChannelChip(balance: balance)
                 }
 

@@ -247,7 +247,7 @@ struct MenuBarContentView: View {
                 TimelineView(.periodic(from: .now, by: 30)) { context in
                     VStack(spacing: 8) {
                         ForEach(store.peakPrices) { price in
-                            PeakPriceRow(price: price, now: context.date)
+                            PeakPriceRow(price: price, now: context.date, holidays: store.holidayCalendar)
                         }
                     }
                 }
@@ -507,12 +507,14 @@ private struct CostRow: View {
 private struct PeakPriceRow: View {
     let price: ModelPrice
     let now: Date
+    /// 节假日年历(`!H` / `W` 记号判定),随 Store 挂载/刷新更新。
+    let holidays: HolidayCalendar
 
     var body: some View {
         let rule = price.peakRule
-        let period = rule?.period(at: now) ?? .peak
-        let next = rule?.nextSwitch(after: now)
-        let rates = price.effectiveRates(at: now)
+        let period = rule?.period(at: now, calendar: holidays) ?? .peak
+        let next = rule?.nextSwitch(after: now, calendar: holidays)
+        let rates = price.effectiveRates(at: now, calendar: holidays)
         let tint: Color = period == .peak ? .orange : .green
 
         HStack(spacing: 8) {

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 设置窗口:数据来源管理 / 菜单栏显示 / 登录自启。
+/// 设置窗口:数据来源管理 / 菜单栏显示 / 小组件余额渠道 / 登录自启。
 struct SettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(HubStore.self) private var store
@@ -65,6 +65,29 @@ struct SettingsView: View {
             }
 
             Section {
+                if balanceChannelOptions.isEmpty {
+                    Text("渠道列表加载后可在此勾选,当前默认全部显示。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(balanceChannelOptions) { option in
+                        Toggle(option.name, isOn: channelBinding(option.id))
+                    }
+                    HStack(spacing: 8) {
+                        Button("全选(含新增渠道)") { settings.widgetBalanceChannels = nil }
+                        Button("清空(都不显示)") { settings.widgetBalanceChannels = [] }
+                        Spacer(minLength: 0)
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                }
+            } header: {
+                Text("小组件 · 余额渠道")
+            } footer: {
+                Text("多选:只有勾选的渠道才会显示在小组件上,没勾的一律不显示。各尺寸按空间取前几个(按渠道 id 排序):Small 1 个、Medium 最多 3 行(再多加一行「还有 N 个勾选渠道未显示」)、Large 每行 2 个最多 2 行(溢出并进「余额+N」)。勾选了但查不到余额的渠道显示「—」,排在有余额的后面。「全选」是默认状态,以后新增的渠道也会显示;「清空」则完全不显示余额,Small 右下角回到「缓存命中」。")
+            }
+
+            Section {
                 Toggle("登录时自动启动", isOn: $settings.launchAtLogin)
                 if let err = settings.launchAtLoginError {
                     Text(err)
@@ -88,7 +111,39 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 440, height: 460)
+        .frame(width: 440, height: 500)
+    }
+
+    /// 小组件余额渠道的可选项:优先渠道列表;渠道接口还没返回时退回「已查到余额的渠道」。
+    /// 勾选集合里存在、但当前列表没有的渠道(换了数据来源)时补一个占位项,
+    /// 保证它在设置页可见、也能被取消勾选。
+    private var balanceChannelOptions: [BalanceChannelOption] {
+        var options = store.channels.map { BalanceChannelOption(id: $0.id, name: $0.name) }
+        if options.isEmpty {
+            options = store.balances.values
+                .sorted { $0.channelID < $1.channelID }
+                .map { BalanceChannelOption(id: $0.channelID, name: $0.channelName) }
+        }
+        // 勾选集合里有、但当前列表没有的渠道(换了数据来源):补占位项,便于看到并取消勾选
+        let missing = (settings.widgetBalanceChannels ?? [])
+            .filter { id in !options.contains(where: { $0.id == id }) }
+            .sorted()
+        for id in missing.reversed() {
+            options.insert(BalanceChannelOption(id: id, name: "已勾选渠道 #\(id)"), at: 0)
+        }
+        return options
+    }
+
+    /// 单个渠道的勾选状态:未设置(nil)时默认全部显示;首次改动时先把当前列表物化成显式集合再改。
+    private func channelBinding(_ id: Int64) -> Binding<Bool> {
+        Binding(
+            get: { settings.widgetBalanceChannels?.contains(id) ?? true },
+            set: { on in
+                var selected = settings.widgetBalanceChannels ?? Set(balanceChannelOptions.map(\.id))
+                if on { selected.insert(id) } else { selected.remove(id) }
+                settings.widgetBalanceChannels = selected
+            }
+        )
     }
 
     private func metricBinding(_ metric: AppSettings.MenuBarMetric) -> Binding<Bool> {
@@ -116,6 +171,12 @@ struct SettingsView: View {
         case .disconnected: .red
         }
     }
+}
+
+/// 小组件余额渠道选择器的一项。
+private struct BalanceChannelOption: Identifiable {
+    let id: Int64
+    let name: String
 }
 
 /// 单个数据来源行:左侧单选标记 + 名称/地址编辑 + 删除。

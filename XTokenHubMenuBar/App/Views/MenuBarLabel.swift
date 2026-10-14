@@ -45,12 +45,17 @@ struct MenuBarLabel: View {
     }
 
     /// 峰谷状态(单字「峰/谷」):取最近切换的模型;无时段价模型时不显示该段。
+    /// 带 `!H` / `W` 记号的规则按 Store 里的节假日年历判定(挂载/刷新时拉取)。
     private var peakText: String? {
         let now = Date()
+        let holidays = store.holidayCalendar
         var best: (switchAt: Date, isPeak: Bool)?
         for price in store.peakPrices {
             guard let rule = price.peakRule else { continue }
-            let candidate = (switchAt: rule.nextSwitch(after: now)?.at ?? .distantFuture, isPeak: rule.isPeak(at: now))
+            let candidate = (
+                switchAt: rule.nextSwitch(after: now, calendar: holidays)?.at ?? .distantFuture,
+                isPeak: rule.isPeak(at: now, calendar: holidays)
+            )
             if best == nil || candidate.switchAt < best!.switchAt {
                 best = candidate
             }

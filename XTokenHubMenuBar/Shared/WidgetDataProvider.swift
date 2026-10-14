@@ -25,7 +25,10 @@ enum WidgetDataProvider {
         static let costToday = "widget_cache_cost_today"
         static let modelTop = "widget_cache_model_top"
         static let channelBalances = "widget_cache_channel_balances"
+        static let balanceChannels = "widget_cache_balance_channels"
+        static let legacyBalanceChannel = "widget_cache_balance_channel" // 上一版单选,读到即迁移
         static let peakPrices = "widget_cache_peak_prices"
+        static let holidays = "widget_cache_holidays"
         static let trend = "widget_cache_trend"
         static let sourceName = "widget_cache_source_name"
         static let billingCurrency = "widget_cache_billing_currency"
@@ -45,8 +48,13 @@ enum WidgetDataProvider {
         var costToday: CostForecast?
         var modelTop: [GroupStat]
         var channelBalances: [ChannelBalance]
+        /// 设置里勾选可显示余额的渠道 id（nil = 未设置：全部显示；空数组 = 都不显示）；
+        /// 只有主 App 桥接能带过来，直连模式沿用上次缓存的值。
+        var balanceChannelIDs: [Int64]? = nil
         /// 配置了峰谷时段价的价目行（为空时 Widget 不显示峰谷模块）。
         var peakPrices: [ModelPrice]
+        /// 节假日年历（未来 60 天清单，供 `!H` / `W` 判定；nil = 无年历，退化为按星期）。
+        var holidays: [HolidayDateItem]? = nil
         /// 近 24 小时按小时分桶的趋势。
         var trend: [TrendPoint]
         var sourceName: String
@@ -99,6 +107,13 @@ enum WidgetDataProvider {
         WidgetCenter.shared.reloadTimelines(ofKind: widgetKind)
     }
 
+    /// 北京时区的当前年份（年历按年拉取；与 PeakWindow 判定时区同口径）。
+    private static func beijingYear() -> Int {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: 8 * 3600) ?? .current
+        return cal.component(.year, from: Date())
+    }
+
     // MARK: - Widget 调用：读取快照
 
     /// - Parameter configuredURL: Widget 配置里填写的服务地址，留空则只用桥接与缓存。
@@ -146,7 +161,9 @@ enum WidgetDataProvider {
             costToday: payload.costToday,
             modelTop: payload.modelTop,
             channelBalances: payload.channelBalances,
+            balanceChannelIDs: payload.balanceChannelIDs,
             peakPrices: payload.peakPrices,
+            holidays: payload.holidays,
             trend: [],
             sourceName: payload.sourceName,
             billingCurrency: payload.billingCurrency,
@@ -201,10 +218,25 @@ enum WidgetDataProvider {
                 snapshot.peakPrices = peaks.filter { $0.peakRule != nil }
             }
 
+            // 节假日年历（供 !H / W 判定）：拉本年+明年并集，失败退化为按星期判定
+            var holidayItems: [HolidayDateItem] = []
+            let bjYear = Self.beijingYear()
+            if let thisYear = try? await api.holidays(year: bjYear) {
+                holidayItems.append(contentsOf: thisYear)
+            }
+            if let nextYear = try? await api.holidays(year: bjYear + 1) {
+                holidayItems.append(contentsOf: nextYear)
+            }
+            snapshot.holidays = holidayItems.isEmpty ? nil : holidayItems
+
             // 余额接口较慢且非核心，失败不影响主数据
             if let balances = try? await api.channelBalances() {
                 snapshot.channelBalances = balances.items
             }
+
+            // 主 App 不在时无从读到设置,沿用上次已知的余额渠道勾选
+            // (勾选的渠道在这台服务上不存在时,展示层会把它略过)
+            snapshot.balanceChannelIDs = cachedBalanceChannelIDs
 
             writeCache(snapshot)
             return snapshot
@@ -221,10 +253,26 @@ enum WidgetDataProvider {
 
     // MARK: - 缓存
 
+    /// 上次已知的余额渠道勾选(nil = 未设置[全部显示] / 从未配置)。
+    /// 存成逗号分隔的有序 id:空串是合法值(显式「都不显示」),键缺失才是「未设置」。
+    private static var cachedBalanceChannelIDs: [Int64]? {
+        if let raw = defaults.string(forKey: Keys.balanceChannels) {
+            return raw.split(separator: ",").compactMap { Int64($0) }
+        }
+        // 迁移上一版单选(单个渠道 id)
+        if defaults.object(forKey: Keys.legacyBalanceChannel) != nil {
+            let legacy = [Int64(defaults.integer(forKey: Keys.legacyBalanceChannel))]
+            defaults.removeObject(forKey: Keys.legacyBalanceChannel)
+            defaults.set(legacy.map(String.init).joined(separator: ","), forKey: Keys.balanceChannels)
+            return legacy
+        }
+        return nil
+    }
+
     static func clearCache() {
-        [Keys.summary, Keys.costToday, Keys.modelTop, Keys.channelBalances, Keys.peakPrices,
-         Keys.trend, Keys.sourceName, Keys.billingCurrency, Keys.billingRate,
-         Keys.timestamp].forEach { defaults.removeObject(forKey: $0) }
+        [Keys.summary, Keys.costToday, Keys.modelTop, Keys.channelBalances, Keys.balanceChannels,
+         Keys.legacyBalanceChannel, Keys.peakPrices, Keys.holidays, Keys.trend, Keys.sourceName,
+         Keys.billingCurrency, Keys.billingRate, Keys.timestamp].forEach { defaults.removeObject(forKey: $0) }
     }
 
     private static func readCache() -> WidgetSnapshot? {
@@ -241,8 +289,12 @@ enum WidgetDataProvider {
                 .flatMap { try? decoder.decode([GroupStat].self, from: $0) } ?? [],
             channelBalances: defaults.data(forKey: Keys.channelBalances)
                 .flatMap { try? decoder.decode([ChannelBalance].self, from: $0) } ?? [],
+            // 键不存在 = 未设置(全部显示)
+            balanceChannelIDs: cachedBalanceChannelIDs,
             peakPrices: defaults.data(forKey: Keys.peakPrices)
                 .flatMap { try? decoder.decode([ModelPrice].self, from: $0) } ?? [],
+            holidays: defaults.data(forKey: Keys.holidays)
+                .flatMap { try? decoder.decode([HolidayDateItem].self, from: $0) },
             trend: defaults.data(forKey: Keys.trend)
                 .flatMap { try? decoder.decode([TrendPoint].self, from: $0) } ?? [],
             sourceName: defaults.string(forKey: Keys.sourceName) ?? defaultSourceName,
@@ -272,8 +324,17 @@ enum WidgetDataProvider {
         if !snapshot.channelBalances.isEmpty, let data = try? encoder.encode(snapshot.channelBalances) {
             defaults.set(data, forKey: Keys.channelBalances)
         }
+        if let ids = snapshot.balanceChannelIDs {
+            defaults.set(ids.sorted().map(String.init).joined(separator: ","), forKey: Keys.balanceChannels)
+        } else {
+            defaults.removeObject(forKey: Keys.balanceChannels)
+        }
         if !snapshot.peakPrices.isEmpty, let data = try? encoder.encode(snapshot.peakPrices) {
             defaults.set(data, forKey: Keys.peakPrices)
+        }
+        // 年历每次都写：离线兜底靠它判对 !H / W，空列表也如实落盘（拉到了空年历）。
+        if let holidays = snapshot.holidays, let data = try? encoder.encode(holidays) {
+            defaults.set(data, forKey: Keys.holidays)
         }
         if !snapshot.trend.isEmpty, let data = try? encoder.encode(snapshot.trend) {
             defaults.set(data, forKey: Keys.trend)

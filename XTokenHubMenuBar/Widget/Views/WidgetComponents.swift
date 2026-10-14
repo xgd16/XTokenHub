@@ -33,6 +33,12 @@ enum WD {
 
     static let hairline = Color.primary.opacity(0.08)
     static let tileFill = Color.primary.opacity(0.05)
+
+    /// 余额展示文本：按**上游原币种**展示（与面板同口径，不折算汇率），查不到时给占位。
+    static func balanceText(_ balance: ChannelBalance) -> String {
+        guard let info = balance.balance else { return "—" }
+        return MoneyFormatter.formatBalance(info.total, currency: info.currency)
+    }
 }
 
 // MARK: - 发丝分隔线
@@ -264,6 +270,36 @@ struct MetricStack: View {
     }
 }
 
+// MARK: - 渠道余额指标（与 MetricStack 同构，Small 尺寸用）
+
+/// 上行余额数值、下行渠道名 —— 与 `MetricStack` 完全同高，
+/// 因此小组件可以拿它顶替「缓存命中」，在零垂直成本下展示**设置里勾选渠道**的余额。
+struct BalanceStack: View {
+    let balance: ChannelBalance
+
+    var body: some View {
+        VStack(spacing: 1) {
+            HStack(spacing: 3) {
+                Image(systemName: "creditcard.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(Color.accentColor)
+                Text(WD.balanceText(balance))
+                    .font(WD.valueFont)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            Text(balance.channelName)
+                .font(WD.captionFont)
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                // 渠道名多长都有:尾部截断保留前缀,与 ChannelChip 同口径
+                .truncationMode(.tail)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
 // MARK: - 模型排行条
 
 /// 排行条。名称列随容器比例分配，避免固定宽度把长模型名截成无信息的前缀。
@@ -320,23 +356,28 @@ struct ChannelChip: View {
                 .fill(balance.ok ? Color.green : Color.secondary.opacity(0.4))
                 .frame(width: 5, height: 5)
 
+            // 渠道名优先：要认出「哪一家」，截断了就没意义；金额靠缩字号让位（见下）
             Text(balance.channelName)
                 .font(WD.captionFont)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 // 尾部截断：渠道名多以后缀区分（…-Claude / …-Go），中间截断会只剩前后各三个字母
                 .truncationMode(.tail)
+                .layoutPriority(1)
 
             if let info = balance.balance {
-                // 余额是上游账户的真实币种，按原币种展示、不做汇率折算（与主 App 面板同口径）
+                // 余额是上游账户的真实币种，按原币种展示、不做汇率折算（与主 App 面板同口径）。
+                // 缩字号而不是截断：数字必须完整
                 Text(MoneyFormatter.formatBalance(info.total, currency: info.currency))
                     .font(WD.captionFont)
                     .fontWeight(.medium)
                     .monospacedDigit()
                     .lineLimit(1)
+                    .minimumScaleFactor(0.6)
             }
         }
-        .layoutPriority(1)
+        // 刻意不给 chip 加 layoutPriority：加上后每个 chip 都坚持自己的理想宽度，
+        // 三个长名渠道总宽 409pt > 326pt，排在后面的 chip 会被挤到几个像素宽、等于看不见
     }
 }
 
@@ -432,9 +473,9 @@ struct PeakStatusRow: View {
         .frame(height: 13)
     }
 
-    /// 生效输入/输出价（每百万，行自身币种）。
+    /// 生效输入/输出价（每百万，行自身币种）。带 `!H` / `W` 记号的规则按主角自带的年历判定。
     private var ratesText: String {
-        let rates = lead.price.effectiveRates(at: date)
+        let rates = lead.price.effectiveRates(at: date, calendar: lead.calendar)
         return MoneyFormatter.formatPerMillion(perToken: rates.input, currency: lead.price.displayCurrency)
             + "/" + MoneyFormatter.formatPerMillion(perToken: rates.output, currency: lead.price.displayCurrency)
     }
