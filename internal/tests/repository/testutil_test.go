@@ -8,7 +8,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
-	"xtokenhub/internal/model"
+	"xtokenhub/internal/database"
 )
 
 // newTestDB 建立独立的内存库并完成迁移。
@@ -27,7 +27,8 @@ func NewTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("获取底层连接: %v", err)
 	}
 	sqlDB.SetMaxOpenConns(1)
-	if err := db.AutoMigrate(&model.Channel{}, &model.APIKey{}, &model.RequestLog{}); err != nil {
+	// 复用 database.Migrate（含 FTS5 虚表），避免测试与生产两份表清单不同步。
+	if err := database.Migrate(db); err != nil {
 		t.Fatalf("迁移: %v", err)
 	}
 	return db

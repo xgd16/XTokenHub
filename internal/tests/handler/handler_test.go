@@ -19,6 +19,8 @@ import (
 	"xtokenhub/internal/gateway"
 	"xtokenhub/internal/handler/admin"
 	gwhandler "xtokenhub/internal/handler/gateway"
+	mcp "xtokenhub/internal/handler/mcp"
+	memoryhandler "xtokenhub/internal/handler/memory"
 	"xtokenhub/internal/model"
 	"xtokenhub/internal/provider"
 	"xtokenhub/internal/repository"
@@ -79,6 +81,23 @@ func newTestEnvFull(t *testing.T, requireKey bool) (*gorm.DB, *gin.Engine, *http
 	if err := costSvc.EnsureDefaults(context.Background()); err != nil {
 		t.Fatalf("初始化计价服务: %v", err)
 	}
+	// 节假日年历：桩源不联网
+	holidaySvc := service.NewHolidayService(
+		repository.NewHolidayDateRepository(db),
+		testutil.NewStubHolidayFetcher(),
+		service.HolidayOptions{Enabled: true},
+	)
+	// 记忆库：Agent API + 控制台 + MCP 三面共用；分类用桩（不联网）
+	memoryRepo := repository.NewMemoryRepository(db)
+	memoryNsRepo := repository.NewMemoryNamespaceRepository(db)
+	memoryLinkRepo := repository.NewMemoryLinkRepository(db)
+	memorySettingsRepo := repository.NewMemorySettingsRepository(db)
+	memorySvc := service.NewMemoryService(memoryRepo, memoryNsRepo, memoryLinkRepo, memorySettingsRepo, service.MemoryOptions{})
+	if err := memorySvc.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("播种记忆库设置: %v", err)
+	}
+	memoryClassifier := service.NewMemoryClassifier(memoryRepo, memoryNsRepo, memorySettingsRepo, chRepo,
+		&stubClassifierLLM{}, service.MemoryClassifyOptions{})
 	exec := gateway.NewExecutor(chRepo, logRepo, bus, upstreamTimeout)
 	exec.SetPricing(costSvc)
 	// 思维档位改写：规则存内存库并接入网关出站链路
@@ -100,10 +119,21 @@ func newTestEnvFull(t *testing.T, requireKey bool) (*gorm.DB, *gin.Engine, *http
 		Logs:     admin.NewLogHandler(logSvc),
 		Stats:    admin.NewStatsHandler(statsSvc),
 		Pricing:  admin.NewPricingHandler(costSvc),
+		Holidays: admin.NewHolidayHandler(holidaySvc),
 		ReasonRewrites: admin.NewReasoningRewriteHandler(reasoningSvc),
 		WS:       admin.NewWSHandler(hub),
 		Gateway:  gwhandler.NewHandler(exec, keySvc, requireKey, 1<<20),
 		WebFS:    memFS,
+		// 记忆库三面：Agent API 鉴权跟随 requireKey，控制台沿用无鉴权
+		MemoryEnabled: true,
+		MemoryAgent: memoryhandler.NewHandler(memorySvc, memoryhandler.Options{
+			Source: string(model.MemorySourceAPI), KeyRequired: requireKey, Keys: keySvc,
+		}),
+		MemoryConsole: memoryhandler.NewHandler(memorySvc, memoryhandler.Options{
+			Source: string(model.MemorySourceConsole),
+		}),
+		MemoryAdmin: admin.NewMemoryHandler(memorySvc, memoryClassifier),
+		MemoryMCP:   mcp.NewHandler(memorySvc, keySvc, requireKey),
 	})
 
 	srv := httptest.NewServer(engine)
@@ -112,6 +142,14 @@ func newTestEnvFull(t *testing.T, requireKey bool) (*gorm.DB, *gin.Engine, *http
 		srv.Close()
 	})
 	return db, engine, srv, keySvc
+}
+
+// stubClassifierLLM 分类补全桩：固定返回空归类，不联网。
+type stubClassifierLLM struct{}
+
+// Classify 实现 service.ClassifierLLM。
+func (s *stubClassifierLLM) Classify(_ context.Context, _ *model.Channel, _, _, _ string) (string, error) {
+	return `{"assignments":[]}`, nil
 }
 
 // testPricingEntries 测试价格表：一个 OpenAI 系模型 + 一个带长上下文分档的 Anthropic 系模型。

@@ -34,6 +34,13 @@ func TestLoadDefaultsWhenFileMissing(t *testing.T) {
 	if !cfg.Gateway.RequireKey {
 		t.Error("gateway.require_key 默认应为 true")
 	}
+	if !cfg.Memory.Enabled || !cfg.Memory.RequireKey {
+		t.Errorf("memory.enabled / require_key 默认应为 true: %+v", cfg.Memory)
+	}
+	if cfg.Memory.SearchLimitDefault != 10 || cfg.Memory.SearchLimitMax != 50 ||
+		cfg.Memory.ClassifierBatchSize != 20 || cfg.Memory.ClassifierTimeoutSeconds != 60 {
+		t.Errorf("memory 默认值错误: %+v", cfg.Memory)
+	}
 }
 
 func TestLoadFromYAML(t *testing.T) {

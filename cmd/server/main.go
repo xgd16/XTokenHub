@@ -22,6 +22,8 @@ import (
 	"xtokenhub/internal/gateway"
 	"xtokenhub/internal/handler/admin"
 	gwhandler "xtokenhub/internal/handler/gateway"
+	mcp "xtokenhub/internal/handler/mcp"
+	memoryhandler "xtokenhub/internal/handler/memory"
 	"xtokenhub/internal/model"
 	"xtokenhub/internal/pkg/logger"
 	"xtokenhub/internal/provider"
@@ -119,6 +121,21 @@ func main() {
 		log.Warn("种子化会话标识配置失败", logger.Err(err))
 	}
 
+	// 节假日年历：峰谷规则 !H / W 记号的判定依据（DeepSeek 等厂商节假日全天谷价）
+	holidayRepo := repository.NewHolidayDateRepository(db)
+	holidaySvc := service.NewHolidayService(holidayRepo,
+		provider.NewHolidayClient(time.Duration(cfg.Holiday.TimeoutSeconds)*time.Second),
+		service.HolidayOptions{
+			Enabled:      cfg.Holiday.Enabled,
+			AutoSync:     cfg.Holiday.AutoSync,
+			SyncInterval: time.Duration(cfg.Holiday.SyncIntervalHours) * time.Hour,
+			SourceURL:    cfg.Holiday.SourceURL,
+		})
+	model.SetHolidaySource(holidaySvc)
+	if err := holidaySvc.LoadCache(context.Background()); err != nil {
+		log.Warn("载入节假日年历失败", logger.Err(err))
+	}
+
 	// 计价：价格表 + 请求级费用 + 花费预测（价格表为空时首次启动自动同步一次）
 	costSvc := service.NewCostService(
 		priceRepo, logRepo, billingRepo,
@@ -143,6 +160,15 @@ func main() {
 	}
 	priceCtx, priceCancel := context.WithCancel(context.Background())
 	go costSvc.RunAutoSync(priceCtx)
+	go holidaySvc.RunAutoSync(priceCtx)
+	// 年历首次启动同步一次（表为空时），之后由定时同步跟进新公布的安排
+	go func() {
+		if n, err := holidayRepo.Count(priceCtx); err == nil && n == 0 {
+			if _, err := holidaySvc.Sync(priceCtx); err != nil {
+				log.Warn("首次同步节假日年历失败", logger.Err(err))
+			}
+		}
+	}()
 	// 存量日志补算：补上启用计价之前的历史请求费用（幂等，无变化不写库）
 	go func() {
 		if _, err := costSvc.Recompute(priceCtx, time.Time{}, time.Time{}, true); err != nil {
@@ -217,6 +243,34 @@ func main() {
 	aggCtx, aggCancel := context.WithCancel(context.Background())
 	go aggSvc.Run(aggCtx)
 
+	// 记忆库：Agent 共享记忆（FTS5 + 中文 n-gram 检索，无向量）+ 控制台管理 + LLM 一键分类
+	memoryRepo := repository.NewMemoryRepository(db)
+	memoryNsRepo := repository.NewMemoryNamespaceRepository(db)
+	memoryLinkRepo := repository.NewMemoryLinkRepository(db)
+	memorySettingsRepo := repository.NewMemorySettingsRepository(db)
+	memorySvc := service.NewMemoryService(memoryRepo, memoryNsRepo, memoryLinkRepo, memorySettingsRepo,
+		service.MemoryOptions{
+			SearchLimitDefault: cfg.Memory.SearchLimitDefault,
+			SearchLimitMax:     cfg.Memory.SearchLimitMax,
+		})
+	if err := memorySvc.EnsureDefaults(context.Background()); err != nil {
+		log.Warn("播种记忆库设置失败", logger.Err(err))
+	}
+	memoryClassifier := service.NewMemoryClassifier(memoryRepo, memoryNsRepo, memorySettingsRepo, chRepo,
+		provider.NewChannelClassifier(time.Duration(cfg.Memory.ClassifierTimeoutSeconds)*time.Second),
+		service.MemoryClassifyOptions{BatchSize: cfg.Memory.ClassifierBatchSize})
+	// 分类任务不跨重启续跑：把上轮卡在 running 的状态标记为失败，避免按钮永远「进行中」
+	if err := memoryClassifier.ResetStale(context.Background()); err != nil {
+		log.Warn("重置记忆分类任务状态失败", logger.Err(err))
+	}
+	memoryAgentHandler := memoryhandler.NewHandler(memorySvc, memoryhandler.Options{
+		Source: string(model.MemorySourceAPI), KeyRequired: cfg.Memory.RequireKey, Keys: keySvc,
+	})
+	memoryConsoleHandler := memoryhandler.NewHandler(memorySvc, memoryhandler.Options{
+		Source: string(model.MemorySourceConsole),
+	})
+	memoryMCPHandler := mcp.NewHandler(memorySvc, keySvc, cfg.Memory.RequireKey)
+
 	// 路由
 	engine := gin.New()
 	deps := &router.Deps{
@@ -231,10 +285,16 @@ func main() {
 		WS:             admin.NewWSHandler(hub),
 		SessionHeaders: admin.NewSessionHeaderConfigHandler(sessionHeaderSvc),
 		Pricing:        admin.NewPricingHandler(costSvc),
+		Holidays:       admin.NewHolidayHandler(holidaySvc),
 		DataSettings:   admin.NewDataSettingsHandler(dataSvc),
 		MimoSettings:   admin.NewMimoSettingsHandler(mimoSvc),
 		ReasonRewrites: admin.NewReasoningRewriteHandler(reasoningSvc),
 		Gateway:        gwhandler.NewHandler(exec, keySvc, cfg.Gateway.RequireKey, cfg.Gateway.MaxBodyBytes),
+		MemoryEnabled:  cfg.Memory.Enabled,
+		MemoryAgent:    memoryAgentHandler,
+		MemoryConsole:  memoryConsoleHandler,
+		MemoryAdmin:    admin.NewMemoryHandler(memorySvc, memoryClassifier),
+		MemoryMCP:      memoryMCPHandler,
 	}
 	// 网关按配置的会话 Header 名单提取会话标识（默认 X-Session-Id + 自定义扩展）
 	deps.Gateway.SetSessionHeaders(sessionHeaderSvc)

@@ -11,6 +11,8 @@ import (
 	"xtokenhub/internal/config"
 	"xtokenhub/internal/handler/admin"
 	gwhandler "xtokenhub/internal/handler/gateway"
+	mcp "xtokenhub/internal/handler/mcp"
+	memory "xtokenhub/internal/handler/memory"
 	"xtokenhub/internal/middleware"
 )
 
@@ -27,11 +29,22 @@ type Deps struct {
 	WS             *admin.WSHandler
 	SessionHeaders *admin.SessionHeaderConfigHandler
 	Pricing        *admin.PricingHandler
+	Holidays       *admin.HolidayHandler
 	DataSettings   *admin.DataSettingsHandler
 	MimoSettings   *admin.MimoSettingsHandler
 	ReasonRewrites *admin.ReasoningRewriteHandler
 	Gateway        *gwhandler.Handler
-	WebFS          fs.FS // 前端产物（可为 nil：仅 API）
+	// MemoryEnabled 记忆库开关（关闭则三组路由都不注册）。
+	MemoryEnabled bool
+	// MemoryAgent 记忆库 Agent 独立 API（/memory/v1，key 鉴权）。
+	MemoryAgent *memory.Handler
+	// MemoryConsole 记忆库控制台 API（/api/v1/memories*，沿用管理端无鉴权约定）。
+	MemoryConsole *memory.Handler
+	// MemoryAdmin 记忆库管理（命名空间管理、LLM 分类）。
+	MemoryAdmin *admin.MemoryHandler
+	// MemoryMCP MCP 端点（/mcp）。
+	MemoryMCP *mcp.Handler
+	WebFS     fs.FS // 前端产物（可为 nil：仅 API）
 }
 
 // Register 注册全部路由。
@@ -90,6 +103,8 @@ func Register(engine *gin.Engine, d *Deps) {
 		api.DELETE("/settings/prices/:id", d.Pricing.DeletePrice)
 		api.GET("/settings/billing", d.Pricing.GetBilling)
 		api.PUT("/settings/billing", d.Pricing.UpdateBilling)
+		api.GET("/settings/holidays", d.Holidays.List)
+		api.POST("/settings/holidays/sync", d.Holidays.Sync)
 		api.GET("/settings/data", d.DataSettings.Get)
 		api.PUT("/settings/data", d.DataSettings.Update)
 		api.POST("/settings/data/aggregate/rebuild", d.DataSettings.RebuildAggregate)
@@ -100,6 +115,37 @@ func Register(engine *gin.Engine, d *Deps) {
 		api.GET("/reasoning-rewrites/:id", d.ReasonRewrites.Get)
 		api.PUT("/reasoning-rewrites/:id", d.ReasonRewrites.Update)
 		api.DELETE("/reasoning-rewrites/:id", d.ReasonRewrites.Delete)
+
+		// 记忆库管理（控制台专用：命名空间管理、LLM 一键分类、批量操作）
+		if d.MemoryAdmin != nil {
+			api.GET("/memory-namespaces", d.MemoryAdmin.ListNamespaces)
+			api.POST("/memory-namespaces", d.MemoryAdmin.CreateNamespace)
+			api.POST("/memory-namespaces/rename", d.MemoryAdmin.RenameNamespace)
+			api.POST("/memory-namespaces/merge", d.MemoryAdmin.MergeNamespaces)
+			api.PATCH("/memory-namespaces/:id", d.MemoryAdmin.UpdateNamespace)
+			api.DELETE("/memory-namespaces/:id", d.MemoryAdmin.DeleteNamespace)
+			api.POST("/memories/batch-move", d.MemoryAdmin.BatchMove)
+			api.POST("/memories/auto-link", d.MemoryAdmin.RebuildAutoLinks)
+			api.GET("/memories/classify-config", d.MemoryAdmin.ClassifyConfig)
+			api.PUT("/memories/classify-config", d.MemoryAdmin.UpdateClassifyConfig)
+			api.POST("/memories/classify", d.MemoryAdmin.TriggerClassify)
+			api.GET("/memories/classify", d.MemoryAdmin.ClassifyStatus)
+		}
+		// 记忆库控制台 API（与 /memory/v1 同一实现，写入身份为 console）
+		if d.MemoryConsole != nil {
+			d.MemoryConsole.RegisterConsole(api)
+		}
+	}
+
+	// 记忆库 Agent 独立 API（鉴权头同网关：Authorization: Bearer / x-api-key）
+	if d.MemoryEnabled && d.MemoryAgent != nil {
+		mem := engine.Group("/memory/v1", d.MemoryAgent.Auth())
+		d.MemoryAgent.Register(mem)
+	}
+
+	// MCP 端点（Streamable HTTP）
+	if d.MemoryEnabled && d.MemoryMCP != nil {
+		d.MemoryMCP.Register(engine)
 	}
 
 	// 网关端点

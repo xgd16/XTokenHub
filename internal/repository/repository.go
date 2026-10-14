@@ -189,6 +189,18 @@ type ModelPriceRepository interface {
 	Count(ctx context.Context) (int64, error)
 }
 
+// HolidayDateRepository 节假日年历数据访问接口。
+type HolidayDateRepository interface {
+	// ReplaceYear 事务内整体替换某年标注（先删该年再批量写入），返回写入行数。
+	ReplaceYear(ctx context.Context, year int, rows []model.HolidayDate) (int, error)
+	// List 全部标注，按日期升序（内存缓存加载用）。
+	List(ctx context.Context) ([]model.HolidayDate, error)
+	// ListYear 某年标注，按日期升序。
+	ListYear(ctx context.Context, year int) ([]model.HolidayDate, error)
+	// Count 标注总行数。
+	Count(ctx context.Context) (int64, error)
+}
+
 // BillingSettingsRepository 计费展示设置数据访问接口。
 type BillingSettingsRepository interface {
 	// Get 读取单行设置，不存在返回 gorm.ErrRecordNotFound。
@@ -301,4 +313,134 @@ type SessionHeaderConfigRepository interface {
 	GetByKey(ctx context.Context, key string) (*model.SessionHeaderConfig, error)
 	ListEnabled(ctx context.Context) ([]model.SessionHeaderConfig, error)
 	Count(ctx context.Context, count *int64) error
+}
+
+// MemoryFilter 记忆检索/列表过滤条件（零值 = 不限命名空间与类型）。
+type MemoryFilter struct {
+	// Namespace 精确匹配命名空间名（空 = 不限）。
+	Namespace string
+	// Uncategorized 只看未分类（namespace=''）。
+	Uncategorized bool
+	// Kind 记忆类型（空 = 不限）。
+	Kind string
+	// Tags 标签过滤（全部命中，AND 语义）。
+	Tags []string
+	// Status 状态精确匹配（空 = 不限；服务层按场景补 active）。
+	Status string
+	// PinnedOnly 只看置顶。
+	PinnedOnly bool
+	// ExcludeExpired 排除已过期记忆（需 Now 非零）。
+	ExcludeExpired bool
+	// Now 过期判断基准时间（零值表示不判断过期）。
+	Now time.Time
+}
+
+// MemoryHit 全文检索候选行（含 FTS5 bm25 得分，负值越小越相关）；
+// LikeSearch 路径 Score 恒为 0，相关性由服务层按固定值处理。
+type MemoryHit struct {
+	model.Memory
+	Score float64 `gorm:"column:score" json:"score"`
+}
+
+// MemoryStats 记忆库总览（控制台统计与命名空间图例用）。
+type MemoryStats struct {
+	Total         int64            `json:"total"`
+	Active        int64            `json:"active"`
+	Uncategorized int64            `json:"uncategorized"`
+	Superseded    int64            `json:"superseded"`
+	Archived      int64            `json:"archived"`
+	Deleted       int64            `json:"deleted"`
+	Links         int64            `json:"links"`
+	ByKind        map[string]int64 `json:"by_kind"`
+	ByNamespace   map[string]int64 `json:"by_namespace"`
+}
+
+// MemoryJobStatus 记忆分类任务状态（写回 memory_settings 的任务列）。
+type MemoryJobStatus struct {
+	Status        string     `json:"status"`         // 空 | running | done | failed
+	Total         int        `json:"total"`          // 本轮待分类总数
+	Done          int        `json:"done"`           // 已处理数
+	Assigned      int        `json:"assigned"`       // 已归类数
+	NewNamespaces int        `json:"new_namespaces"` // 新建命名空间数
+	Message       string     `json:"message"`        // 结果摘要或错误信息
+	StartedAt     *time.Time `json:"started_at,omitempty"`
+	FinishedAt    *time.Time `json:"finished_at,omitempty"`
+}
+
+// MemoryRepository 记忆数据访问接口（memories 表 + memories_fts 索引）。
+type MemoryRepository interface {
+	// Create 写入记忆并同步 FTS 索引（同一事务）。
+	Create(ctx context.Context, m *model.Memory) error
+	// Update 全字段更新并同步 FTS 索引。
+	Update(ctx context.Context, m *model.Memory) error
+	// Get 按 id 读取；不存在返回 errs.CodeNotFound。
+	Get(ctx context.Context, id int64) (*model.Memory, error)
+	// GetByHash 同命名空间内按内容哈希查活跃记忆（写入去重）；不存在返回 gorm.ErrRecordNotFound。
+	GetByHash(ctx context.Context, hash, namespace string) (*model.Memory, error)
+	// ClearNamespace 把某命名空间的记忆移回未分类并清空归属来源，返回影响行数。
+	ClearNamespace(ctx context.Context, namespace string) (int64, error)
+	// Search FTS5 全文检索（match 为 textseg 构造的表达式），按相关性升序返回候选。
+	Search(ctx context.Context, match string, f MemoryFilter, limit int) ([]MemoryHit, error)
+	// LikeSearch 单字中文等无法进 FTS 的兜底检索（标题/正文子串匹配，按更新时间降序）。
+	LikeSearch(ctx context.Context, needle string, f MemoryFilter, limit int) ([]MemoryHit, error)
+	// List 分页列表；sort: updated | created | importance | access，空为 updated。
+	List(ctx context.Context, f MemoryFilter, sort string, offset, limit int) ([]model.Memory, int64, error)
+	// GraphNodes 关系图节点：置顶/重要度/访问热度优先，取前 limit 条（超限裁剪）。
+	GraphNodes(ctx context.Context, f MemoryFilter, limit int) ([]model.Memory, error)
+	// TouchAccess 批量刷新访问统计（检索即强化）。
+	TouchAccess(ctx context.Context, ids []int64, at time.Time) error
+	// NamespaceCounts 各命名空间的 active 记忆数（键 "" 为未分类）。
+	NamespaceCounts(ctx context.Context) (map[string]int64, error)
+	// Stats 记忆库总览。
+	Stats(ctx context.Context) (*MemoryStats, error)
+	// RebuildFTS 重建全文索引（修复用），返回重建行数。
+	RebuildFTS(ctx context.Context) (int, error)
+}
+
+// MemoryNamespaceRepository 命名空间注册表数据访问接口。
+type MemoryNamespaceRepository interface {
+	// List 全部命名空间，按名称升序。
+	List(ctx context.Context) ([]model.MemoryNamespace, error)
+	// GetByName 按名称读取；不存在返回 errs.CodeNotFound。
+	GetByName(ctx context.Context, name string) (*model.MemoryNamespace, error)
+	// GetByID 按 id 读取；不存在返回 errs.CodeNotFound。
+	GetByID(ctx context.Context, id int64) (*model.MemoryNamespace, error)
+	// Ensure 不存在则创建（并发冲突吞掉），返回是否新建。
+	Ensure(ctx context.Context, name, description, createdBy string) (bool, error)
+	// Update 更新描述（名称变更走 Rename）。
+	Update(ctx context.Context, ns *model.MemoryNamespace) error
+	// Rename 事务内改名并同步记忆行；目标名已存在返回 errs.CodeInvalidParams。
+	Rename(ctx context.Context, from, to string) (int64, error)
+	// Merge 事务内把 from 的记忆并入 to 并删除 from 注册行。
+	Merge(ctx context.Context, from, to string) (int64, error)
+	// Delete 删除注册行并把其记忆移回未分类，返回迁移的记忆数。
+	Delete(ctx context.Context, id int64) (int64, error)
+}
+
+// MemoryLinkRepository 记忆关系数据访问接口。
+type MemoryLinkRepository interface {
+	// Add 建边；已存在（from,to,relation）时幂等返回既有行。
+	Add(ctx context.Context, l *model.MemoryLink) (*model.MemoryLink, error)
+	// Delete 按 id 删边；不存在返回 errs.CodeNotFound。
+	Delete(ctx context.Context, id int64) error
+	// DeleteAutoByMemory 回收某条记忆发出的自动边（按建边者过滤，供自动关联重算用）。
+	DeleteAutoByMemory(ctx context.Context, memoryID int64, createdBy string) (int64, error)
+	// ListByMemory 与某条记忆相关的全部边。
+	ListByMemory(ctx context.Context, id int64) ([]model.MemoryLink, error)
+	// ListForNodes 两端都在 ids 内的边（关系图用）；ids 为空返回空表。
+	ListForNodes(ctx context.Context, ids []int64) ([]model.MemoryLink, error)
+	// Count 边总数。
+	Count(ctx context.Context) (int64, error)
+}
+
+// MemorySettingsRepository 记忆库设置数据访问接口（单行表，ID 固定为 1）。
+type MemorySettingsRepository interface {
+	// Get 读取单行设置，不存在返回 gorm.ErrRecordNotFound。
+	Get(ctx context.Context) (*model.MemorySettings, error)
+	// Save 全量保存（首次播种用）。
+	Save(ctx context.Context, s *model.MemorySettings) error
+	// UpdateConfig 只更新分类配置列，避免覆盖任务写回的任务状态。
+	UpdateConfig(ctx context.Context, s *model.MemorySettings) error
+	// UpdateJobStatus 只更新任务状态列。
+	UpdateJobStatus(ctx context.Context, st MemoryJobStatus) error
 }

@@ -10,12 +10,14 @@ import (
 	"gorm.io/gorm/logger"
 
 	"xtokenhub/internal/aggregation"
+	"xtokenhub/internal/database"
 	"xtokenhub/internal/model"
 	"xtokenhub/internal/provider"
 	"xtokenhub/internal/repository"
 )
 
 // NewMemoryDB 每个用例独享 :memory: SQLite（单连接共享同一库）并完成迁移。
+// 迁移复用 database.Migrate（含 FTS5 虚表），避免测试与生产两份表清单不同步。
 func NewMemoryDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
@@ -29,12 +31,7 @@ func NewMemoryDB(t *testing.T) *gorm.DB {
 		t.Fatalf("获取底层连接: %v", err)
 	}
 	sqlDB.SetMaxOpenConns(1)
-	if err := db.AutoMigrate(
-		&model.Channel{}, &model.APIKey{}, &model.RequestLog{}, &model.CustomModel{},
-		&model.SessionHeaderConfig{}, &model.ModelPrice{}, &model.BillingSettings{},
-		&model.DailyUsageStat{}, &model.DailyModelStat{}, &model.DataSettings{},
-		&model.ReasoningRewrite{}, &model.MimoSettings{},
-	); err != nil {
+	if err := database.Migrate(db); err != nil {
 		t.Fatalf("迁移: %v", err)
 	}
 	return db
@@ -80,4 +77,28 @@ func (s *StubPricingSource) Fetch(_ context.Context, _ string) ([]provider.Model
 		return nil, s.Err
 	}
 	return s.Entries, nil
+}
+
+// StubHolidayFetcher 固定年历的拉取桩：按年返回预设标注，不发网络请求。
+// 结构化满足 service.HolidayFetcher。
+type StubHolidayFetcher struct {
+	Years map[int][]provider.HolidayEntry
+	// Err 非 nil 时模拟拉取失败。
+	Err error
+	// Calls 记录 FetchYear 调用次数，供断言同步行为。
+	Calls int
+}
+
+// NewStubHolidayFetcher 构造年历拉取桩。
+func NewStubHolidayFetcher() *StubHolidayFetcher {
+	return &StubHolidayFetcher{Years: map[int][]provider.HolidayEntry{}}
+}
+
+// FetchYear 实现 service.HolidayFetcher。
+func (s *StubHolidayFetcher) FetchYear(_ context.Context, _ string, year int) ([]provider.HolidayEntry, error) {
+	s.Calls++
+	if s.Err != nil {
+		return nil, s.Err
+	}
+	return s.Years[year], nil
 }

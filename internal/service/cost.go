@@ -604,8 +604,9 @@ type PriceInput struct {
 	CacheReadCostPerToken  float64 `json:"cache_read_cost_per_token"`
 	CacheWriteCostPerToken float64 `json:"cache_write_cost_per_token"`
 
-	// PeakWindow 高峰时段规则，如 `1-5;09:00-12:00,14:00-18:00`（北京时间）；
-	// 空 = 不启用时段价。OffPeak* 为对应空闲时段费率（同 Currency）。
+	// PeakWindow 高峰时段规则，如 DeepSeek 口径 `1-5,!H;09:00-12:00,14:00-18:00`（北京时间，
+	// 星期段可附节假日记号 !H=放假期全天空闲、W=补班日按工作日）；空 = 不启用时段价。
+	// OffPeak* 为对应空闲时段费率（同 Currency）。
 	PeakWindow                    string  `json:"peak_window"`
 	OffPeakInputCostPerToken      float64 `json:"off_peak_input_cost_per_token"`
 	OffPeakOutputCostPerToken     float64 `json:"off_peak_output_cost_per_token"`

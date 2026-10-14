@@ -97,7 +97,7 @@ func logEffectiveSettings(db *gorm.DB, maxConns int) {
 	}
 }
 
-// Migrate 自动迁移全部业务表。
+// Migrate 自动迁移全部业务表，并补建 AutoMigrate 建不了的 FTS5 虚表。
 func Migrate(db *gorm.DB) error {
 	if err := db.AutoMigrate(
 		&model.Channel{},
@@ -106,14 +106,35 @@ func Migrate(db *gorm.DB) error {
 		&model.CustomModel{},
 		&model.SessionHeaderConfig{},
 		&model.ModelPrice{},
+		&model.HolidayDate{},
 		&model.BillingSettings{},
 		&model.DailyUsageStat{},
 		&model.DailyModelStat{},
 		&model.DataSettings{},
 		&model.ReasoningRewrite{},
 		&model.MimoSettings{},
+		&model.Memory{},
+		&model.MemoryNamespace{},
+		&model.MemoryLink{},
+		&model.MemorySettings{},
 	); err != nil {
 		return fmt.Errorf("AutoMigrate: %w", err)
+	}
+	if err := ensureMemoryFTS(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureMemoryFTS 建立记忆库全文索引虚表（AutoMigrate 无法创建虚拟表，用幂等 DDL 补）。
+// unicode61 作用于 textseg 预切分后的 *_seg 列：ASCII 词与中文 bigram 已是空格分隔的 token，
+// 因此中文子串检索不再受「整段中文=一个 token」之困；短查询由 LIKE 兜底。
+func ensureMemoryFTS(db *gorm.DB) error {
+	err := db.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+		title_seg, content_seg, tags_seg, tokenize='unicode61 remove_diacritics 2'
+	)`).Error
+	if err != nil {
+		return fmt.Errorf("创建 memories_fts: %w", err)
 	}
 	return nil
 }

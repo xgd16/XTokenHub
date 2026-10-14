@@ -26,13 +26,17 @@ const (
 
 // peakWindowLayout 原始字符串形态：`<星期>;<时段>`。
 //
-//	星期  1=周一 .. 7=周日，支持 `1-5` 区间与 `1,6,7` 列表
+//	星期  1=周一 .. 7=周日，支持 `1-5` 区间与 `1,6,7` 列表；
+//	      另有两个节假日记号（判定依赖节假日年历，见 holiday.go）：
+//	      `!H` 放假日（含调休连休）全天不计高峰；`W` 调休补班日按工作日对待。
 //	时段  `09:00-12:00`，多个用逗号分隔，如 `09:00-12:00,14:00-18:00`
 //
-// 例（DeepSeek 工作日高峰）：`1-5;09:00-12:00,14:00-18:00`
+// 例（DeepSeek 工作日高峰，节假日全天谷价）：`1-5,!H;09:00-12:00,14:00-18:00`
 type peakWindowParsed struct {
-	days  [8]bool  // 下标 1..7 有效
-	spans [][2]int // 每段 [起始分钟, 结束分钟)，同一天内
+	days          [8]bool  // 下标 1..7 有效
+	spans         [][2]int // 每段 [起始分钟, 结束分钟)，同一天内
+	skipHoliday   bool     // `!H`：放假日全天不计高峰
+	makeupWorkday bool     // `W`：调休补班日视为命中星期集合
 }
 
 // PeakWindow 高峰时段规则。空值表示不启用时段价（金额恒按高峰价计）。
@@ -73,18 +77,29 @@ func (w PeakWindow) Valid() bool { return w.parsed != nil }
 
 // IsPeak 判定 at 时刻是否处于高峰时段；未配置时段规则时恒为 true（不打折）。
 //
-// 按北京时间判定：先把 at 转到 UTC+8，取其星期与当日分钟数。
+// 按北京时间判定：先把 at 转到 UTC+8，取其星期与当日分钟数；
+// 规则带 `!H` / `W` 记号时再按节假日年历（HolidayKindOf）修正。
 func (w PeakWindow) IsPeak(at time.Time) bool {
 	if w.parsed == nil {
 		return true
 	}
 	local := at.In(BeijingZone)
+	kind := HolidayKindOf(beijingDate(local))
+	// `!H`：放假日（含调休连休）全天空闲，优先于星期与时段判定。
+	if w.parsed.skipHoliday && kind == HolidayKindHoliday {
+		return false
+	}
 	// Go 的 Weekday 是 0=周日；规则用 1=周一 .. 7=周日。
 	day := int(local.Weekday())
 	if day == 0 {
 		day = 7
 	}
-	if !w.parsed.days[day] {
+	matched := w.parsed.days[day]
+	// `W`：调休补班日（周末但按工作日上班）视为命中星期集合。
+	if !matched && w.parsed.makeupWorkday && kind == HolidayKindWorkday {
+		matched = true
+	}
+	if !matched {
 		return false
 	}
 	minute := local.Hour()*60 + local.Minute()
@@ -94,6 +109,12 @@ func (w PeakWindow) IsPeak(at time.Time) bool {
 		}
 	}
 	return false
+}
+
+// beijingDate 取北京日期 YYYY-MM-DD（年历主键口径）。
+func beijingDate(t time.Time) string {
+	y, m, d := t.Date()
+	return fmt.Sprintf("%04d-%02d-%02d", y, int(m), d)
 }
 
 // Period 返回 at 时刻的计费时段；未配置时段规则时为空串（不落库、不展示）。
@@ -164,7 +185,7 @@ func parsePeakWindow(s string) (*peakWindowParsed, error) {
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("时段规则需为 `<星期>;<时段>` 两段，如 1-5;09:00-12:00: %q", s)
 	}
-	days, err := parseWeekdays(strings.TrimSpace(parts[0]))
+	days, skipHoliday, makeup, err := parseWeekdays(strings.TrimSpace(parts[0]))
 	if err != nil {
 		return nil, err
 	}
@@ -175,19 +196,34 @@ func parsePeakWindow(s string) (*peakWindowParsed, error) {
 	if len(spans) == 0 {
 		return nil, fmt.Errorf("时段规则至少需要一个时段: %q", s)
 	}
-	return &peakWindowParsed{days: days, spans: spans}, nil
+	return &peakWindowParsed{
+		days: days, spans: spans,
+		skipHoliday: skipHoliday, makeupWorkday: makeup,
+	}, nil
 }
 
-// parseWeekdays 解析星期表达式：支持 `1-5` 区间与 `1,6,7` 列表，值域 1..7。
-func parseWeekdays(s string) ([8]bool, error) {
-	var days [8]bool
+// parseWeekdays 解析星期表达式：支持 `1-5` 区间与 `1,6,7` 列表，值域 1..7；
+// 另识别节假日记号 `!H`（放假日不计峰）与 `W`（补班日按工作日）。
+func parseWeekdays(s string) (days [8]bool, skipHoliday, makeup bool, err error) {
 	if s == "" {
-		return days, fmt.Errorf("时段规则缺少星期段")
+		return days, false, false, fmt.Errorf("时段规则缺少星期段")
 	}
 	for _, item := range strings.Split(s, ",") {
 		item = strings.TrimSpace(item)
 		if item == "" {
-			return days, fmt.Errorf("星期段含空项: %q", s)
+			return days, false, false, fmt.Errorf("星期段含空项: %q", s)
+		}
+		// 节假日记号（大小写不敏感）：`!H` 放假日不计峰、`W` 补班日按工作日。
+		switch strings.ToUpper(item) {
+		case "!H":
+			skipHoliday = true
+			continue
+		case "W":
+			makeup = true
+			continue
+		}
+		if strings.HasPrefix(item, "!") {
+			return days, false, false, fmt.Errorf("未知节假日记号 %q（支持 !H = 放假日不计峰）", item)
 		}
 		lo, hi := item, item
 		if i := strings.Index(item, "-"); i >= 0 {
@@ -195,20 +231,20 @@ func parseWeekdays(s string) ([8]bool, error) {
 		}
 		l, err := parseWeekday(lo, s)
 		if err != nil {
-			return days, err
+			return days, false, false, err
 		}
 		h, err := parseWeekday(hi, s)
 		if err != nil {
-			return days, err
+			return days, false, false, err
 		}
 		if l > h {
-			return days, fmt.Errorf("星期区间起点大于终点: %q", item)
+			return days, false, false, fmt.Errorf("星期区间起点大于终点: %q", item)
 		}
 		for d := l; d <= h; d++ {
 			days[d] = true
 		}
 	}
-	return days, nil
+	return days, skipHoliday, makeup, nil
 }
 
 func parseWeekday(s, whole string) (int, error) {

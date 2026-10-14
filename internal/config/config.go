@@ -21,7 +21,9 @@ type Config struct {
 	Gateway   GatewayConfig   `mapstructure:"gateway"`
 	Retention RetentionConfig `mapstructure:"retention"`
 	Pricing   PricingConfig   `mapstructure:"pricing"`
+	Holiday   HolidayConfig   `mapstructure:"holiday"`
 	Billing   BillingConfig   `mapstructure:"billing"`
+	Memory    MemoryConfig    `mapstructure:"memory"`
 }
 
 type ServerConfig struct {
@@ -90,6 +92,20 @@ type PricingConfig struct {
 	TimeoutSeconds int `mapstructure:"timeout_seconds"`
 }
 
+// HolidayConfig 节假日年历配置（峰谷规则 !H / W 记号的判定依据）。
+type HolidayConfig struct {
+	// Enabled 是否启用节假日年历（关闭后 !H / W 记号视为无数据，按星期判定）。
+	Enabled bool `mapstructure:"enabled"`
+	// AutoSync 是否按 SyncIntervalHours 定时同步年历。
+	AutoSync bool `mapstructure:"auto_sync"`
+	// SyncIntervalHours 同步周期（小时）。节假日安排一年一变，新安排公布后一周内自动拿到。
+	SyncIntervalHours int `mapstructure:"sync_interval_hours"`
+	// SourceURL 年历接口地址，{year} 为年份占位符；留空使用内置 timor.tech 年历。
+	SourceURL string `mapstructure:"source_url"`
+	// TimeoutSeconds 年历拉取超时（秒）。
+	TimeoutSeconds int `mapstructure:"timeout_seconds"`
+}
+
 // BillingConfig 计费展示默认值（仅首次初始化入库，之后以设置页的值为准）。
 type BillingConfig struct {
 	// DisplayCurrency 默认展示币种：USD | CNY。
@@ -98,6 +114,22 @@ type BillingConfig struct {
 	USDRate float64 `mapstructure:"usd_cny_rate"`
 	// MonthlyBudgetUSD 月度预算，0 = 不设（仅用于预测提示，不拦截请求）。
 	MonthlyBudgetUSD float64 `mapstructure:"monthly_budget_usd"`
+}
+
+// MemoryConfig 记忆库配置（Agent 记忆 API / 控制台 / MCP 共用）。
+type MemoryConfig struct {
+	// Enabled 是否启用记忆库（关闭后 /memory/v1 与 /mcp 不注册）。
+	Enabled bool `mapstructure:"enabled"`
+	// RequireKey 记忆 API 与 MCP 是否强制校验 API Key（鉴权头同网关）。
+	RequireKey bool `mapstructure:"require_key"`
+	// SearchLimitDefault 检索默认返回条数。
+	SearchLimitDefault int `mapstructure:"search_limit_default"`
+	// SearchLimitMax 检索返回条数上限。
+	SearchLimitMax int `mapstructure:"search_limit_max"`
+	// ClassifierBatchSize 单次 LLM 分类调用送的记忆条数。
+	ClassifierBatchSize int `mapstructure:"classifier_batch_size"`
+	// ClassifierTimeoutSeconds 单次分类补全超时（秒）。
+	ClassifierTimeoutSeconds int `mapstructure:"classifier_timeout_seconds"`
 }
 
 // Load 读取配置：priority env( XT_HUB_ 前缀 ) > yaml > 内置默认值。
@@ -153,9 +185,20 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("pricing.sync_interval_hours", 24)
 	v.SetDefault("pricing.source_url", "")
 	v.SetDefault("pricing.timeout_seconds", 20)
+	v.SetDefault("holiday.enabled", true)
+	v.SetDefault("holiday.auto_sync", true)
+	v.SetDefault("holiday.sync_interval_hours", 168) // 一周
+	v.SetDefault("holiday.source_url", "")
+	v.SetDefault("holiday.timeout_seconds", 20)
 	v.SetDefault("billing.display_currency", "USD")
 	v.SetDefault("billing.usd_cny_rate", 0)
 	v.SetDefault("billing.monthly_budget_usd", 0)
+	v.SetDefault("memory.enabled", true)
+	v.SetDefault("memory.require_key", true)
+	v.SetDefault("memory.search_limit_default", 10)
+	v.SetDefault("memory.search_limit_max", 50)
+	v.SetDefault("memory.classifier_batch_size", 20)
+	v.SetDefault("memory.classifier_timeout_seconds", 60)
 }
 
 func (c *Config) validate() error {
@@ -194,6 +237,28 @@ func (c *Config) validate() error {
 		}
 		if c.Billing.MonthlyBudgetUSD < 0 {
 			return fmt.Errorf("billing.monthly_budget_usd 非法: %v", c.Billing.MonthlyBudgetUSD)
+		}
+	}
+	if c.Holiday.Enabled {
+		if c.Holiday.SyncIntervalHours < 1 {
+			return fmt.Errorf("holiday.sync_interval_hours 非法: %d", c.Holiday.SyncIntervalHours)
+		}
+		if c.Holiday.TimeoutSeconds < 1 {
+			return fmt.Errorf("holiday.timeout_seconds 非法: %d", c.Holiday.TimeoutSeconds)
+		}
+	}
+	if c.Memory.Enabled {
+		if c.Memory.SearchLimitDefault < 1 || c.Memory.SearchLimitDefault > 200 {
+			return fmt.Errorf("memory.search_limit_default 非法: %d（允许 1~200）", c.Memory.SearchLimitDefault)
+		}
+		if c.Memory.SearchLimitMax < c.Memory.SearchLimitDefault || c.Memory.SearchLimitMax > 500 {
+			return fmt.Errorf("memory.search_limit_max 非法: %d（允许 search_limit_default~500）", c.Memory.SearchLimitMax)
+		}
+		if c.Memory.ClassifierBatchSize < 1 || c.Memory.ClassifierBatchSize > 100 {
+			return fmt.Errorf("memory.classifier_batch_size 非法: %d（允许 1~100）", c.Memory.ClassifierBatchSize)
+		}
+		if c.Memory.ClassifierTimeoutSeconds < 1 {
+			return fmt.Errorf("memory.classifier_timeout_seconds 非法: %d", c.Memory.ClassifierTimeoutSeconds)
 		}
 	}
 	return nil

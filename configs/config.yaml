@@ -38,10 +38,30 @@ pricing:
   source_url: ""                       # 价格表地址，留空使用内置 LiteLLM 公开价格表
   timeout_seconds: 20                  # 价格表拉取超时(秒)
 
+holiday:
+  enabled: true                        # 是否启用节假日年历（峰谷规则 !H / W 记号的判定依据）
+  auto_sync: true                      # 定时同步年历（逐年标注放假/调休补班）
+  sync_interval_hours: 168             # 同步周期(小时)。安排一年一变，新安排公布后一周内自动拿到
+  source_url: ""                       # 年历接口地址，{year} 为年份占位符；留空使用内置 holiday-cn 年历（源自国务院公告）
+  timeout_seconds: 20                  # 年历拉取超时(秒)
+
 billing:
   display_currency: USD                # 默认展示币种 USD | CNY（仅首次初始化入库，之后以设置页为准）
   usd_cny_rate: 0                      # USD -> CNY 汇率，手工配置（展示 CNY、以及折算人民币计价的价格行都需要；为 0 时人民币行费用记 0）
   monthly_budget_usd: 0                # 月度预算上限，0 = 不设；仅用于预测提示，不拦截请求
-# 说明：每个模型的价格行可单独标币种（USD|CNY）并配置高峰时段（如 1-5;09:00-12:00,14:00-18:00，
-#       北京时间），空闲时段按 off-peak 费率计价。这些只能来自设置页的手工价格行 —— 公开价格表
-#       只有美元固定价，同步不会写入币种/时段信息。
+# 说明：每个模型的价格行可单独标币种（USD|CNY）并配置高峰时段（如 DeepSeek 口径的
+#       1-5,!H;09:00-12:00,14:00-18:00，北京时间），空闲时段按 off-peak 费率计价。
+#       星期段可附节假日记号：!H = 法定节假日（整个放假期，含调休连休）全天空闲，
+#       W = 调休补班日按工作日；记号依据 holiday 年历判定。这些只能来自设置页的手工
+#       价格行 —— 公开价格表只有美元固定价，同步不会写入币种/时段信息。
+
+memory:
+  enabled: true                        # 是否启用记忆库（/memory/v1 Agent API、控制台记忆页、/mcp）
+  require_key: true                    # 记忆 API 与 MCP 强制校验 API Key（鉴权头同网关）
+  search_limit_default: 10             # 检索默认返回条数
+  search_limit_max: 50                 # 检索返回条数上限
+  classifier_batch_size: 20            # 单次 LLM 分类调用送的记忆条数（一键分类用）
+  classifier_timeout_seconds: 60       # 单次分类补全超时(秒)
+# 说明：记忆按「命名空间」归类（主题），写入时接入端可显式指定；未指定进「未分类」，
+#       由控制台「一键分类」用可配置的渠道+模型归类。检索为 FTS5 + 中文 n-gram 双通道，
+#       不依赖向量模型。
