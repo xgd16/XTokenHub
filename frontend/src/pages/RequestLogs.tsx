@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
-import { App, Card, Drawer, Input, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip } from 'antd'
+import { App, Button, Drawer, Input, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { ClearOutlined, LoadingOutlined, ReloadOutlined } from '@ant-design/icons'
 import LiveDuration from '../components/LiveDuration'
 import LogDetail, { DetailRows } from '../components/LogDetail'
+import { PageHero } from '../components/PageHero'
 import { channelApi, type Channel } from '../api/channel'
 import { keyApi, type APIKey } from '../api/key'
 import { logApi, type CleanupStatus, type LogQuery, type RequestLog } from '../api/log'
 import { WS_EVENTS, useWsEvent, useWsReconnected } from '../api/ws'
 import { agentShort, compactCN, duration, fullTime, hitRateColor, modeShort, percent, protocolShort, timeOf } from '../utils/format'
+import { Reveal } from '../utils/motion'
 import { useIsMobile } from '../utils/useIsMobile'
 import { useMoneyFormat } from '../utils/useMoneyFormat'
 
@@ -375,21 +377,53 @@ export default function RequestLogs() {
     })
   }
 
+  const hoursLabel = HOUR_OPTIONS.find((o) => o.value === (filters.hours ?? 24))?.label ?? '近 24 小时'
+
   return (
-    <>
-    <Card
-      className="panel"
-      // 表格背景为不透明直角，padding 0 时会盖住面板底部圆角边框；裁剪 body 底角（10px 圆角 - 1px 边框）对齐
-      styles={{
-        body: { padding: 0, overflow: 'hidden', borderBottomLeftRadius: 9, borderBottomRightRadius: 9 },
-        header: { borderBottom: '1px solid var(--border-faint)', paddingInline: 16 },
-      }}
-      title={
-        <span style={{ fontSize: 13, color: 'var(--text-secondary)', letterSpacing: '0.06em' }}>
-          请求日志 · Token 计量与缓存命中
-        </span>
-      }
-      extra={
+    <Reveal className="obs-page">
+      <PageHero
+        eyebrow="logs · 观测流水"
+        title="请求日志"
+        desc="Token 计量与缓存命中明细；实时行先插入占位，落库后原位替换为完整数据。"
+        readouts={[
+          { label: '命中日志', value: total, tone: 'accent' },
+          { label: '时间窗', value: hoursLabel },
+        ]}
+        actions={
+          <>
+            <Popconfirm
+              title="清理过期请求日志"
+              description={`将删除超过 ${cleanupStatus?.max_days ?? 90} 天的日志；SQLite 删除后文件大小不会自动收缩。`}
+              okText="清理"
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
+              onConfirm={() => void doCleanup()}
+            >
+              <Button icon={<ClearOutlined />} loading={cleaning}>
+                清理过期日志
+              </Button>
+            </Popconfirm>
+            <Button icon={<ReloadOutlined />} onClick={() => void load()} aria-label="刷新" />
+          </>
+        }
+        foot={
+          <>
+            <span className={`obs-flag${cleanupStatus?.enabled === false ? ' warn' : ''}`} aria-hidden="true" />
+            <span>
+              保留最近 {cleanupStatus?.max_days ?? 90} 天 ·
+              {cleanupStatus?.mode === 'interval'
+                ? ` 每 ${cleanupStatus?.interval_hours ?? 24} 小时自动清理一次`
+                : ` 每天 ${String(cleanupStatus?.run_hour ?? 4).padStart(2, '0')}:00 自动清理`}
+              {cleanupStatus?.enabled === false && '（后台定时清理已关闭，仍可手动执行）'}
+              {cleanupStatus?.last_run_at && ` · 上次 ${fullTime(cleanupStatus.last_run_at)} 删除 ${compactCN(cleanupStatus.last_deleted_rows)} 条`}
+              {cleanupStatus != null && cleanupStatus.last_trimmed_rows > 0 && ` · 置空请求头 ${compactCN(cleanupStatus.last_trimmed_rows)} 条`}
+            </span>
+          </>
+        }
+      />
+
+      <div className="obs-panel">
+        <div className="obs-toolbar" style={{ paddingBottom: 12 }}>
         <Space wrap size={8}>
           <Select
             placeholder="协议"
@@ -436,52 +470,9 @@ export default function RequestLogs() {
               <Switch size="small" onChange={(v) => setFilter({ error_only: v })} />
             </Space>
           </Tooltip>
-          <Tooltip
-            title={
-              <div style={{ fontSize: 12, lineHeight: 1.7 }}>
-                <div>
-                  保留最近 {cleanupStatus?.max_days ?? 90} 天，
-                  {cleanupStatus?.mode === 'interval'
-                    ? `每 ${cleanupStatus?.interval_hours ?? 24} 小时自动清理一次`
-                    : `每天 ${String(cleanupStatus?.run_hour ?? 4).padStart(2, '0')}:00 自动清理`}
-                </div>
-                {cleanupStatus?.enabled === false && <div style={{ color: 'var(--amber)' }}>后台定时清理已关闭，仍可手动执行</div>}
-                {cleanupStatus?.last_run_at && (
-                  <div>
-                    上次 {fullTime(cleanupStatus.last_run_at)} · 删除 {compactCN(cleanupStatus.last_deleted_rows)} 条
-                    {cleanupStatus.last_trimmed_rows > 0 && ` · 置空请求头 ${compactCN(cleanupStatus.last_trimmed_rows)} 条`}
-                  </div>
-                )}
-              </div>
-            }
-          >
-            <Popconfirm
-              title="清理过期请求日志"
-              description={`将删除超过 ${cleanupStatus?.max_days ?? 90} 天的日志；SQLite 删除后文件大小不会自动收缩。`}
-              okText="清理"
-              cancelText="取消"
-              okButtonProps={{ danger: true }}
-              onConfirm={() => void doCleanup()}
-            >
-              <button
-                className="ant-btn ant-btn-default"
-                style={{ height: 32, borderRadius: 6, color: 'var(--text-secondary)', background: 'transparent', border: '1px solid var(--border-faint)', cursor: 'pointer' }}
-              >
-                {cleaning ? <LoadingOutlined spin /> : <ClearOutlined />} 清理过期日志
-              </button>
-            </Popconfirm>
-          </Tooltip>
-          <button
-            className="ant-btn ant-btn-default"
-            style={{ height: 32, borderRadius: 6, color: 'var(--text-secondary)', background: 'transparent', border: '1px solid var(--border-faint)', cursor: 'pointer' }}
-            onClick={() => void load()}
-          >
-            <ReloadOutlined />
-          </button>
         </Space>
-      }
-    >
-      <Table<RequestLog>
+        </div>
+        <Table<RequestLog>
         rowKey={(r) => (r.req_id && !r.id ? `live-${r.req_id}` : `${r.id}`)}
         loading={loading}
         dataSource={items}
@@ -503,9 +494,9 @@ export default function RequestLogs() {
         columns={isMobile ? mobileLogColumns(money) : logColumns(money)}
         expandable={isMobile ? { expandedRowRender: (r) => <LogDetail r={r} pending={isPending(r)} /> } : undefined}
       />
-    </Card>
+      </div>
 
-    <Drawer
+      <Drawer
         title={
           detailLog ? (
             <span className="mono" style={{ fontSize: 14 }}>
@@ -550,6 +541,6 @@ export default function RequestLogs() {
           </div>
         )}
       </Drawer>
-    </>
+    </Reveal>
   )
 }

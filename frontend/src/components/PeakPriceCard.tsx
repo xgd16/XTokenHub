@@ -3,7 +3,8 @@ import { Tooltip, Typography } from 'antd'
 import { pricingApi, type ModelPrice } from '../api/pricing'
 import { formatPricePerMillion } from '../utils/money'
 import { useNow } from '../utils/useNow'
-import { nextPeakSwitch, peakPeriodAt, peakPeriodBounds, type PricePeriod } from '../utils/peakWindow'
+import { nextPeakSwitch, peakPeriodAt, peakPeriodBounds, hasHolidayTokens, type PricePeriod } from '../utils/peakWindow'
+import { useHolidayCalendar } from '../utils/useHolidayCalendar'
 
 const { Text } = Typography
 
@@ -86,6 +87,11 @@ function ModelDetail({ p }: { p: ModelPrice }) {
       <div className="mono" style={{ marginTop: 4, color: 'var(--text-faint)' }}>
         高峰时段（北京时间）{p.peak_window}
       </div>
+      {hasHolidayTokens(p.peak_window) && (
+        <div style={{ marginTop: 2, color: 'var(--text-faint)' }}>
+          记号 !H = 放假日（含调休连休）全天空闲价、W = 调休补班日按工作日（依节假日年历判定）
+        </div>
+      )}
       <div style={{ marginTop: 2, color: 'var(--text-faint)' }}>费率均为每百万 token，不含长上下文分档</div>
     </div>
   )
@@ -101,6 +107,8 @@ function ModelDetail({ p }: { p: ModelPrice }) {
 export default memo(function PeakPriceCard() {
   const [prices, setPrices] = useState<ModelPrice[] | null>(null)
   const now = useNow()
+  // 拉取节假日年历：`!H` / `W` 记号的时段判定依赖它
+  useHolidayCalendar()
 
   useEffect(() => {
     let alive = true

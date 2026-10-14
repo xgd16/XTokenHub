@@ -3,22 +3,18 @@ import {
   App,
   Button,
   Checkbox,
-  Col,
   Drawer,
-  Empty,
   Form,
   Input,
   InputNumber,
   Pagination,
   Popconfirm,
-  Row,
   Select,
   Space,
   Spin,
   Switch,
   Tag,
   Tooltip,
-  Typography,
 } from 'antd'
 import { CloudDownloadOutlined, CopyOutlined, ExperimentOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import {
@@ -37,11 +33,12 @@ import {
   type ProviderType,
 } from '../api/channel'
 import { WS_EVENTS, useWsEvent, useWsReconnected } from '../api/ws'
-import { fullTime, protocolShort } from '../utils/format'
+import { PageHero } from '../components/PageHero'
+import { fullTime, hashColor, obsColorStyle, protocolShort } from '../utils/format'
+import { Reveal } from '../utils/motion'
 import { copyText } from '../utils/clipboard'
 import { useIsMobile } from '../utils/useIsMobile'
 
-const { Text } = Typography
 /** 协议探测徽标组：✓ 原生 / ✗ / 未探测。 */
 const ProtocolBadges = memo(function ProtocolBadges({ channel }: { channel: Channel }) {
   const native = nativeProtocolsOf(channel)
@@ -184,11 +181,11 @@ function BalanceCell({ entry }: { entry?: ChannelBalance }) {
   )
 }
 
-/** 键值行：卡片内信息行（与 DetailRows 同节奏）。 */
+/** 键值行：卡片内信息行（obs-kv 统一节奏）。 */
 function CardRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12, minHeight: 22 }}>
-      <span style={{ color: 'var(--text-faint)', fontSize: 12, flexShrink: 0, width: 56 }}>{label}</span>
+    <div className="obs-kv" style={{ minHeight: 22 }}>
+      <span className="obs-kv-label" style={{ width: 56 }}>{label}</span>
       <span style={{ minWidth: 0, flex: 1, display: 'flex', alignItems: 'center', gap: 8 }}>{children}</span>
     </div>
   )
@@ -237,27 +234,20 @@ const ChannelCard = memo(function ChannelCard(props: {
   const { ch, balance, probing } = props
   const enabled = ch.status === 1
   const modelCount = ch.models ? parseCSV(ch.models).length : 0
+  // 身份色按「接口风格」取：同一厂家的渠道同色，停用转灰
+  const providerLabel = PROVIDERS.find((p) => p.value === ch.provider)?.label ?? ch.provider
   return (
-    <div
-      style={{
-        flex: 1,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 10,
-        padding: '14px 16px',
-        border: '1px solid var(--border-faint)',
-        borderRadius: 10,
-        background: 'var(--card-tint)',
-      }}
-    >
-      {/* 头部：名称 + 启用开关 */}
+    <div className="obs-card" style={{ ...obsColorStyle(enabled ? hashColor(providerLabel) : 'var(--text-faint)'), gap: 10, padding: '14px 16px 12px' }}>
+      <span className="obs-card-glow" aria-hidden="true" />
+      {/* 头部：身份点 + 名称 + 启用开关 */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
         <Space size={8} style={{ minWidth: 0 }}>
+          <span className="obs-card-dot" aria-hidden="true" />
           <span className="mono" style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {ch.name}
           </span>
           <Tag style={{ background: 'transparent', fontSize: 11, lineHeight: '16px', padding: '0 6px', flexShrink: 0 }}>
-            {PROVIDERS.find((p) => p.value === ch.provider)?.label ?? ch.provider}
+            {providerLabel}
           </Tag>
         </Space>
         <Tooltip title={enabled ? '启用中 · 点击停用' : '已停用 · 点击启用'}>
@@ -564,51 +554,60 @@ export default function Channels() {
     )
   }, [items, kw])
 
+  // 本页启用 / 停用分布（服务端只回分页页数据，读数以「本页」口径标注）
+  const enabledOnPage = useMemo(() => items.filter((c) => c.status === 1).length, [items])
+  const disabledOnPage = items.length - enabledOnPage
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div className="panel" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
-        {/* 工具栏 */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', rowGap: 8, justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-          <Text style={{ color: 'var(--text-secondary)', fontSize: 13, letterSpacing: '0.06em' }}>
-            上游渠道 · 原生协议自动识别
-            <span className="mono" style={{ marginLeft: 10, fontSize: 12, color: 'var(--text-faint)' }}>
-              {total} 个
-            </span>
-          </Text>
-          <Space wrap>
+    <Reveal className="obs-page">
+      <PageHero
+        eyebrow="channels · 上游接入"
+        title="渠道管理"
+        desc="上游 API 统一编排：接口风格自动识别，原生协议透传，余额与探测结果一屏掌握。"
+        readouts={[
+          { label: '渠道总数', value: total, tone: 'accent' },
+          { label: '本页启用', value: enabledOnPage },
+          { label: '本页停用', value: disabledOnPage, tone: disabledOnPage > 0 ? 'warn' : undefined },
+        ]}
+        actions={
+          <>
             <Input
               allowClear
-              size="small"
               style={{ width: 220 }}
               placeholder="搜索名称 / BaseURL / 模型"
               prefix={<SearchOutlined style={{ color: 'var(--text-faint)' }} />}
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
             />
-            <Button icon={<ReloadOutlined />} onClick={() => { void load(); void loadBalances() }} size="small" />
+            <Button icon={<ReloadOutlined />} onClick={() => { void load(); void loadBalances() }} aria-label="刷新" />
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
               新建渠道
             </Button>
-          </Space>
-        </div>
+          </>
+        }
+      />
 
-        {/* 渠道卡片网格 */}
+      {/* 渠道卡片网格 */}
+      <section className="obs-section">
+        <div className="obs-section-head">
+          <span>渠道列表</span>
+          <span className="obs-count-chip">{kw ? `${filtered.length} / ${total}` : total}</span>
+        </div>
         <Spin spinning={loading}>
           {filtered.length === 0 ? (
-            <Empty
-              style={{ padding: '40px 0' }}
-              description={kw ? '无匹配渠道' : '还没有渠道 · 新建后即可统一接入上游 API'}
-            >
+            <div className="obs-empty">
+              <div className="obs-empty-title">{kw ? '无匹配渠道' : '还没有渠道'}</div>
+              <div className="obs-empty-hint">新建渠道后即可统一接入上游 API；多渠道路由与原生透传会自动生效</div>
               {!kw && (
-                <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+                <Button type="primary" icon={<PlusOutlined />} onClick={openCreate} style={{ marginTop: 14 }}>
                   新建渠道
                 </Button>
               )}
-            </Empty>
+            </div>
           ) : (
-            <Row gutter={[12, 12]} align="stretch">
-              {filtered.map((ch) => (
-                <Col key={ch.id} xs={24} sm={12} xl={8} style={{ display: 'flex' }}>
+            <div className="obs-grid wide">
+              {filtered.map((ch, i) => (
+                <Reveal key={ch.id} className="obs-cell" delay={Math.min(i * 0.04, 0.4)}>
                   <ChannelCard
                     ch={ch}
                     balance={balances[ch.id]}
@@ -619,9 +618,9 @@ export default function Channels() {
                     onModels={showModels}
                     onDelete={removeChannel}
                   />
-                </Col>
+                </Reveal>
               ))}
-            </Row>
+            </div>
           )}
         </Spin>
 
@@ -636,7 +635,7 @@ export default function Channels() {
             showTotal={(t) => <span className="mono" style={{ color: 'var(--text-faint)' }}>共 {t} 个渠道</span>}
           />
         </div>
-      </div>
+      </section>
 
 
       <Drawer
@@ -757,6 +756,6 @@ export default function Channels() {
       >
         {modelsChannel && <ModelPanel models={parseCSV(modelsChannel.models)} />}
       </Drawer>
-    </div>
+    </Reveal>
   )
 }

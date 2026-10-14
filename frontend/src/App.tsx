@@ -10,6 +10,8 @@ import ConsoleLayout from './layouts/ConsoleLayout'
 import { initWS } from './api/ws'
 import { useThemeMode, type ThemeMode } from './theme'
 import './styles/global.css'
+import './styles/console.css'
+import './styles/shell.css'
 
 // 路由级懒加载：首屏只加载仪表盘，其余页面按访问拆分，避免单包 1.3MB 全量下载。
 const Dashboard = lazy(() => import('./pages/Dashboard'))
@@ -17,6 +19,8 @@ const Channels = lazy(() => import('./pages/Channels'))
 const Models = lazy(() => import('./pages/Models'))
 const CustomModels = lazy(() => import('./pages/CustomModels'))
 const ReasoningRewrites = lazy(() => import('./pages/ReasoningRewrites'))
+const Memories = lazy(() => import('./pages/Memories'))
+const MemoryNamespace = lazy(() => import('./pages/MemoryNamespace'))
 const Keys = lazy(() => import('./pages/Keys'))
 const RequestLogs = lazy(() => import('./pages/RequestLogs'))
 const Settings = lazy(() => import('./pages/Settings'))
@@ -82,6 +86,8 @@ export default function App() {
                 <Route path="/models" element={<Models />} />
                 <Route path="/custom-models" element={<CustomModels />} />
                 <Route path="/reasoning-rewrites" element={<ReasoningRewrites />} />
+                <Route path="/memories" element={<Memories />} />
+                <Route path="/memories/:ns" element={<MemoryNamespace />} />
                 <Route path="/keys" element={<Keys />} />
                 <Route path="/logs" element={<RequestLogs />} />
                 <Route path="/settings" element={<Settings />} />

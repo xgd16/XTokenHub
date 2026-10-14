@@ -10,6 +10,7 @@ import ModelTrendChart from '../components/ModelTrendChart'
 import ModelDonut from '../components/ModelDonut'
 import PeakPriceCard from '../components/PeakPriceCard'
 import { AnimatedNumber } from '../components/AnimatedNumber'
+import { PageHero } from '../components/PageHero'
 import { Reveal } from '../utils/motion'
 import {
   lifetimeApi,
@@ -125,26 +126,23 @@ const StatCard = memo(function StatCard(props: {
   )
 })
 
-/** 实时输出吞吐标签：自行订阅 2Hz 吞吐事件，把高频刷新限制在这一个文本节点内，
+/** 实时输出吞吐读数：自行订阅 2Hz 吞吐事件，把高频刷新限制在这一个文本节点内，
  *  不再牵动表格 / 图表 / 卡片（此前它作为 Dashboard 状态会导致整页每秒多次重渲染）。 */
-const ThroughputTicker = memo(function ThroughputTicker() {
+const ThroughputValue = memo(function ThroughputValue() {
   const [tps, setTps] = useState(0)
   useWsEvent(WS_EVENTS.throughput, (msg) => {
     const p = msg.payload as { tokens_per_sec?: number }
     setTps(Number.isFinite(p?.tokens_per_sec) ? p.tokens_per_sec! : 0)
   })
-  return (
-    <span className="mono" style={{ fontSize: 12, color: 'var(--text-faint)' }}>
-      实时输出 <span style={{ color: 'var(--accent)' }}>{compactCN(Math.round(tps))}</span> tok/s
-    </span>
-  )
+  return <>{compactCN(Math.round(tps))}</>
 })
 
 /** 通用 TOP 条形列表骨架（加载中）。 */
 function UsageBarsSkeleton() {
-  const widths = [80, 60, 45]
+  // 行数（6）与间距（12）与真实列表一致，加载完成时卡片不跳位
+  const widths = [80, 66, 54, 45, 38, 30]
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {widths.map((w, i) => (
         <div key={i}>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
@@ -152,7 +150,7 @@ function UsageBarsSkeleton() {
             <span className="skeleton-bar" style={{ width: '25%', height: 12, animationDelay: '0.1s' }} />
           </div>
           <div className="skeleton-bar-track">
-            <div className="skeleton-bar-fill" style={{ width: `${90 - i * 25}%`, animationDelay: `${i * 0.15}s` }} />
+            <div className="skeleton-bar-fill" style={{ width: `${90 - i * 12}%`, animationDelay: `${i * 0.1}s` }} />
           </div>
         </div>
       ))}
@@ -1017,10 +1015,25 @@ export default function Dashboard() {
   const heat = useMemo(() => toHeatmap(heatPoints, heatMode, new Date(), 26), [heatPoints, heatMode])
   const mt = useMemo(() => toModelTrend(modelTrend, rangeDays), [modelTrend, rangeDays])
   const donut = useMemo(() => toDonut(mt.series, 5), [mt])
-  const panelHeaderStyle = { fontSize: 13, color: 'var(--text-secondary)', letterSpacing: '0.06em' } as const
 
   return (
-    <Reveal style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <Reveal className="obs-page">
+      <PageHero
+        eyebrow="overview · 实时观测"
+        title="仪表盘"
+        readouts={[
+          { label: '今日请求', value: cards ? <AnimatedNumber value={cards.requests} format={compactNumber} /> : '—', tone: 'accent' },
+          { label: '今日 Token', value: summary ? <AnimatedNumber value={summary.total_tokens} format={compactCN} /> : '—' },
+          { label: '今日花费', value: costToday ? <AnimatedNumber value={costToday.spent_usd} format={money} /> : '—' },
+          { label: '实时输出 tok/s', value: <ThroughputValue />, tone: 'cyan' },
+        ]}
+        foot={
+          <>
+            <span className="live-dot" aria-hidden="true" />
+            <span>数据经 WebSocket 实时推送 · 统计窗口：今天（本地零点起）</span>
+          </>
+        }
+      />
       <Row gutter={[16, 16]} align="stretch">
         <Col xs={12} md={8} lg={4}>
           <StatCard label="请求总数 · 今天" value={cards ? cards.requests : null} format={compactNumber} tick />
@@ -1084,21 +1097,18 @@ export default function Dashboard() {
             styles={{ body: { padding: '12px 16px 10px' }, header: { borderBottom: '1px solid var(--border-faint)' } }}
             title={
               <div style={{ display: 'flex', flexWrap: 'wrap', rowGap: 6, justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-                <span style={{ ...panelHeaderStyle, whiteSpace: 'nowrap' }}>请求趋势</span>
-                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 14 }}>
-                  <ThroughputTicker />
-                  <Segmented
-                    size="small"
-                    value={range}
-                    onChange={(v) => {
-                      const k = v as TrendRangeKey
-                      rangeRef.current = k // 立即生效，refreshTrend 不依赖重渲染时序
-                      setRange(k)
-                      void refreshTrend()
-                    }}
-                    options={TREND_RANGES.map((r) => ({ value: r.key, label: r.label }))}
-                  />
-                </div>
+                <span className="obs-panel-title" style={{ whiteSpace: 'nowrap' }}>请求趋势</span>
+                <Segmented
+                  size="small"
+                  value={range}
+                  onChange={(v) => {
+                    const k = v as TrendRangeKey
+                    rangeRef.current = k // 立即生效，refreshTrend 不依赖重渲染时序
+                    setRange(k)
+                    void refreshTrend()
+                  }}
+                  options={TREND_RANGES.map((r) => ({ value: r.key, label: r.label }))}
+                />
               </div>
             }
           >
@@ -1110,7 +1120,7 @@ export default function Dashboard() {
             className="panel"
             style={{ height: '100%' }}
             styles={{ body: { padding: '14px 16px 16px' }, header: { borderBottom: '1px solid var(--border-faint)' } }}
-            title={<span style={panelHeaderStyle}>模型 TOP · 今天</span>}
+            title={<span className="obs-panel-title">模型 TOP · 今天</span>}
           >
 <UsageBars rows={ranked} loading={!statsLoaded} />
           </Card>
@@ -1125,7 +1135,7 @@ export default function Dashboard() {
             styles={{ body: { padding: '12px 16px 10px' }, header: { borderBottom: '1px solid var(--border-faint)' } }}
             title={
               <div style={{ display: 'flex', flexWrap: 'wrap', rowGap: 6, justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-                <span style={{ ...panelHeaderStyle, whiteSpace: 'nowrap' }}>每日 Token 趋势图</span>
+                <span className="obs-panel-title" style={{ whiteSpace: 'nowrap' }}>每日 Token 趋势图</span>
                 <Segmented
                   size="small"
                   value={rangeDays}
@@ -1151,7 +1161,7 @@ export default function Dashboard() {
             className="panel"
             style={{ height: '100%' }}
             styles={{ body: { padding: '12px 16px' }, header: { borderBottom: '1px solid var(--border-faint)' } }}
-            title={<span style={panelHeaderStyle}>模型用量</span>}
+            title={<span className="obs-panel-title">模型用量</span>}
             extra={<span className="mono" style={{ fontSize: 12, color: 'var(--text-faint)' }}>{rangeDays === 7 ? '近 7 日' : '近 30 日'}</span>}
           >
             <ModelDonut slices={donut.slices} total={donut.total} size={isMobile ? 150 : 170} loading={!slowLoaded} />
@@ -1170,7 +1180,7 @@ export default function Dashboard() {
               body: { padding: '14px 16px 12px', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 },
               header: { borderBottom: '1px solid var(--border-faint)', flexShrink: 0 },
             }}
-            title={<span style={panelHeaderStyle}>Token 活动</span>}
+            title={<span className="obs-panel-title">Token 活动</span>}
             extra={
               <Segmented
                 size="small"
@@ -1207,7 +1217,7 @@ export default function Dashboard() {
             className="panel"
             style={{ height: '100%' }}
             styles={{ body: { padding: '14px 16px 16px' }, header: { borderBottom: '1px solid var(--border-faint)' } }}
-            title={<span style={panelHeaderStyle}>调用方 TOP · 30 天</span>}
+            title={<span className="obs-panel-title">调用方 TOP · 30 天</span>}
             extra={<span className="mono" style={{ fontSize: 12, color: 'var(--text-faint)' }}>按密钥</span>}
           >
             <UsageBars rows={keyRanked} loading={!slowLoaded} />
@@ -1225,7 +1235,7 @@ export default function Dashboard() {
         title={
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
             <span className="live-dot" />
-            <span style={panelHeaderStyle}>实时请求流</span>
+            <span className="obs-panel-title">实时请求流</span>
           </span>
         }
       >
@@ -1257,10 +1267,6 @@ export default function Dashboard() {
           <div style={{ color: 'var(--text-faint)', padding: '24px 0', textAlign: 'center' }}>无请求头数据</div>
         )}
       </Drawer>
-
-      <div style={{ color: 'var(--text-faint)', fontSize: 12 }} className="mono">
-        统计窗口 今天（本地零点起） · 更新于 {summary ? fullTime(new Date().toISOString()) : '—'} · 数据经 WebSocket 实时推送
-      </div>
     </Reveal>
   )
 }

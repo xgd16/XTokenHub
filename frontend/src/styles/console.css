@@ -1,0 +1,813 @@
+/* ============ 观测台设计系统（全局） ============ */
+/* 页面骨架：obs-page（纵向布局）→ obs-hero（仪表读数区）→ obs-section / obs-panel（内容区）。
+   身份色变量 --obs-color 由行内样式注入（utils/memoryMeta.obsColorStyle），
+   卡片的描边、辉光、箭头都取自它，让同一实体在列表 / 详情 / 图谱中保持同色。 */
+
+/* —— 页面骨架 —— */
+.obs-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* —— Hero：仪表读数区 —— */
+.obs-hero {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border-faint);
+  border-radius: 12px;
+  background: var(--panel-gradient);
+  padding: 20px 22px 18px;
+}
+
+.obs-hero::after {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 10%;
+  right: 10%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border-strong), transparent);
+}
+
+.obs-hero.slim {
+  padding: 14px 18px;
+}
+
+.obs-hero-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.55;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(78deg, transparent 40%, #000 80%);
+  mask-image: linear-gradient(78deg, transparent 40%, #000 80%);
+}
+
+.obs-node-pulse {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: obs-node-pulse 4.2s ease-in-out infinite;
+}
+
+@keyframes obs-node-pulse {
+  0%,
+  100% {
+    opacity: 0.9;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.25;
+    transform: scale(0.72);
+  }
+}
+
+.obs-hero-inner {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.obs-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.obs-eyebrow::before {
+  content: '';
+  width: 26px;
+  height: 1px;
+  background: linear-gradient(90deg, var(--accent), transparent);
+}
+
+.obs-title {
+  margin: 10px 0 0;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.1;
+}
+
+.obs-hero.slim .obs-title {
+  margin: 0;
+  font-size: 19px;
+}
+
+.obs-desc {
+  margin: 8px 0 0;
+  max-width: 720px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+/* 读数行用 grid 而非 flex-wrap：数值随数据到达变宽（0 → 867.33万）时，
+   flex 换行会改变 hero 高度、把下方内容整体顶下去（刷新时肉眼可见的抖动）。
+   桌面 4 列 max-content：列宽自适应但不换行；移动端 2×2 固定栅格，高度恒定。 */
+.obs-readouts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, max-content));
+  align-items: stretch;
+  margin-top: 18px;
+}
+
+.obs-readout {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 0 18px;
+  border-left: 1px solid var(--border-faint);
+}
+
+.obs-readout:first-child {
+  padding-left: 0;
+  border-left: none;
+}
+
+.obs-readout-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 23px;
+  font-weight: 600;
+  line-height: 1.05;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.obs-readout-num.accent {
+  color: var(--accent);
+  text-shadow: 0 0 22px var(--accent-glow);
+}
+
+.obs-readout-num.warn {
+  color: var(--amber);
+}
+
+.obs-readout-num.cyan {
+  color: var(--cyan);
+}
+
+.obs-readout-label {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.obs-hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.obs-hero-foot {
+  position: relative;
+  margin-top: 18px;
+  padding-top: 13px;
+  border-top: 1px solid var(--border-faint);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.obs-hero-foot .ant-progress {
+  flex: 1;
+  min-width: 160px;
+  max-width: 320px;
+  margin: 0;
+}
+
+.obs-flag {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  flex: none;
+}
+
+.obs-flag.accent {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+
+.obs-flag.warn {
+  background: var(--amber);
+  box-shadow: 0 0 9px var(--amber);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+/* —— 区块：小组件头 —— */
+.obs-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.obs-section-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.obs-section-head::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, var(--border-faint), transparent 85%);
+}
+
+.obs-count-chip {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-faint);
+  background: var(--track-bg);
+  border-radius: 999px;
+  padding: 1px 9px;
+}
+
+/* —— 大容器面板（表格 / 表单 / 详情：稳定不位移） —— */
+.obs-panel {
+  position: relative;
+  border: 1px solid var(--border-faint);
+  border-radius: 12px;
+  background: var(--panel-gradient);
+  padding: 16px 18px;
+}
+
+.obs-panel::after {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 10%;
+  right: 10%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border-strong), transparent);
+}
+
+.obs-panel.flush {
+  padding: 0;
+  overflow: hidden;
+}
+
+/* 面板头：图标 + 标题 + 说明 + 右侧操作（配置类卡片用） */
+.obs-panel-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding-bottom: 12px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border-faint);
+}
+
+.obs-panel-head-icon {
+  color: var(--accent);
+  font-size: 15px;
+  margin-top: 2px;
+}
+
+.obs-panel-head-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.obs-panel-head-desc {
+  margin-top: 3px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+.obs-panel-head-extra {
+  margin-left: auto;
+  flex: none;
+}
+
+/* 面板标题（图表卡 / 列表卡）：等宽仪器标签 */
+.obs-panel-title {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  color: var(--text-secondary);
+}
+
+/* 工具条：面板内的筛选 / 操作行 */
+.obs-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  row-gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* —— 星域卡片（实体卡：命名空间 / 渠道 / 模型…） —— */
+.obs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(252px, 1fr));
+  gap: 12px;
+}
+
+.obs-grid.wide {
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+}
+
+.obs-cell {
+  display: flex;
+}
+
+.obs-card {
+  --obs-color: var(--accent);
+  position: relative;
+  overflow: hidden;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-height: 152px;
+  padding: 14px 16px 12px;
+  text-align: left;
+  border: 1px solid var(--border-faint);
+  border-radius: 12px;
+  background: var(--card-tint);
+  transition: transform 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease, background 0.22s ease;
+}
+
+.obs-card.clickable {
+  cursor: pointer;
+}
+
+.obs-card:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--obs-color) 70%, transparent);
+  outline-offset: 2px;
+}
+
+.obs-card:hover {
+  transform: translateY(-3px);
+  background: var(--panel-gradient);
+  border-color: color-mix(in srgb, var(--obs-color) 55%, var(--border-faint));
+  box-shadow:
+    0 18px 36px -24px rgba(0, 0, 0, 0.65),
+    0 0 0 1px color-mix(in srgb, var(--obs-color) 26%, transparent),
+    0 0 30px -12px color-mix(in srgb, var(--obs-color) 60%, transparent);
+}
+
+.obs-card.dashed {
+  border-style: dashed;
+}
+
+/* 装饰层（glow / dots）为绝对定位，内容子项统一提升到其上 */
+.obs-card > *:not(.obs-card-glow):not(.obs-card-dots) {
+  position: relative;
+}
+
+.obs-card-glow {
+  position: absolute;
+  top: -76px;
+  right: -70px;
+  width: 190px;
+  height: 190px;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(circle, color-mix(in srgb, var(--obs-color) 30%, transparent), transparent 68%);
+  opacity: 0.5;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.obs-card:hover .obs-card-glow {
+  opacity: 1;
+  transform: scale(1.18);
+}
+
+.obs-card-dots {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  background-image: radial-gradient(color-mix(in srgb, var(--obs-color) 45%, transparent) 1px, transparent 1.5px);
+  background-size: 15px 15px;
+  -webkit-mask-image: radial-gradient(130% 100% at 88% 4%, #000, transparent 58%);
+  mask-image: radial-gradient(130% 100% at 88% 4%, #000, transparent 58%);
+}
+
+.obs-card-top {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.obs-card-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--obs-color);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--obs-color) 85%, transparent);
+}
+
+.obs-card-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 14.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.obs-card-menu {
+  opacity: 0.45;
+  transition: opacity 0.2s ease;
+}
+
+.obs-card:hover .obs-card-menu,
+.obs-card:focus-within .obs-card-menu {
+  opacity: 1;
+}
+
+.obs-card-num {
+  position: relative;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.obs-card-num small {
+  margin-left: 5px;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  color: var(--text-faint);
+}
+
+.obs-card-desc {
+  position: relative;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 37px;
+}
+
+.obs-card-desc.placeholder {
+  opacity: 0.55;
+}
+
+.obs-card-foot {
+  position: relative;
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.obs-came-from {
+  font-family: var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.obs-enter {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--obs-color);
+  opacity: 0;
+  transform: translateX(-5px);
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+.obs-card:hover .obs-enter,
+.obs-card:focus-visible .obs-enter {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+/* 键值行：卡片内 label / value（渠道卡等） */
+.obs-kv {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.obs-kv-label {
+  width: 62px;
+  flex: none;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+/* —— 提示面板：终端风格说明（调用方式 / 路由规则…） —— */
+.obs-hint {
+  position: relative;
+  border: 1px dashed var(--border-faint);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--card-tint) 55%, transparent);
+  padding: 12px 16px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 2;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.obs-hint-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.obs-hint-label::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+
+/* —— 空态 —— */
+.obs-empty {
+  border: 1px dashed var(--border-faint);
+  border-radius: 12px;
+  padding: 26px 20px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.obs-empty-title {
+  margin-bottom: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.obs-empty-hint {
+  font-size: 12px;
+  line-height: 2;
+  color: var(--text-faint);
+}
+
+.obs-code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  padding: 1px 6px;
+  border: 1px solid var(--border-faint);
+  border-radius: 6px;
+  background: var(--track-bg);
+  color: var(--text-secondary);
+}
+
+/* —— Markdown 正文渲染（记忆库） —— */
+.md-body {
+  font-size: 13.5px;
+  line-height: 1.75;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.md-body > :first-child {
+  margin-top: 0;
+}
+
+.md-body > :last-child {
+  margin-bottom: 0;
+}
+
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4,
+.md-body h5,
+.md-body h6 {
+  margin: 1.1em 0 0.5em;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.md-body h1 {
+  font-size: 18px;
+}
+
+.md-body h2 {
+  font-size: 16px;
+}
+
+.md-body h3 {
+  font-size: 14.5px;
+}
+
+.md-body h4,
+.md-body h5,
+.md-body h6 {
+  font-size: 13.5px;
+}
+
+.md-body p {
+  margin: 0.5em 0;
+}
+
+.md-body ul,
+.md-body ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+
+.md-body li {
+  margin: 0.2em 0;
+}
+
+.md-body li > p {
+  margin: 0.2em 0;
+}
+
+.md-body code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--track-bg);
+  border: 1px solid var(--border-faint);
+  border-radius: 5px;
+  padding: 0.5px 5px;
+}
+
+.md-body pre {
+  margin: 0.7em 0;
+  padding: 10px 12px;
+  overflow: auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-faint);
+  border-radius: 8px;
+}
+
+.md-body pre code {
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.md-body blockquote {
+  margin: 0.6em 0;
+  padding: 2px 0 2px 12px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-secondary);
+}
+
+.md-body hr {
+  margin: 1em 0;
+  border: none;
+  border-top: 1px dashed var(--border-faint);
+}
+
+.md-body a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.md-body a:hover {
+  text-decoration: underline;
+}
+
+.md-body table {
+  display: block;
+  max-width: 100%;
+  margin: 0.7em 0;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.md-body th,
+.md-body td {
+  padding: 5px 10px;
+  border: 1px solid var(--border-faint);
+  text-align: left;
+}
+
+.md-body th {
+  background: var(--track-bg);
+  font-weight: 600;
+}
+
+.md-body img {
+  max-width: 100%;
+  border-radius: 8px;
+}
+
+/* Markdown 预览容器（抽屉内） */
+.md-pane {
+  min-height: 120px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-faint);
+  border-radius: 8px;
+  background: var(--card-tint);
+}
+
+/* —— 二级页标题（详情头部：返回 + 身份点 + 标题 + 计数） —— */
+.obs-detail-title {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.obs-detail-desc {
+  position: relative;
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+/* —— 移动端与减弱动效 —— */
+@media (max-width: 767px) {
+  .obs-hero {
+    padding: 16px 16px 14px;
+  }
+  .obs-title {
+    font-size: 22px;
+  }
+  .obs-readout {
+    padding: 0 12px;
+  }
+  /* 移动端读数改 2×2 固定栅格：数值再宽也不换行，行数恒定 */
+  .obs-readouts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 12px;
+  }
+  .obs-readout:nth-child(odd) {
+    padding-left: 0;
+    border-left: none;
+  }
+  .obs-readout:nth-child(even) {
+    border-left: 1px solid var(--border-faint);
+  }
+  .obs-readout-num {
+    font-size: 19px;
+  }
+  .obs-hero-actions {
+    width: 100%;
+  }
+  .obs-grid,
+  .obs-grid.wide {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .obs-node-pulse,
+  .obs-flag.warn {
+    animation: none;
+  }
+  .obs-card,
+  .obs-card-glow,
+  .obs-card-menu,
+  .obs-enter {
+    transition: none;
+  }
+}

@@ -1,12 +1,12 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { App, Button, Empty, Input, Space, Spin, Switch, Tooltip, Typography } from 'antd'
+import { App, Button, Input, Spin, Switch, Tooltip } from 'antd'
 import { CopyOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { modelsApi, type ModelUsage, type ModelWindow } from '../api/stats'
 import { WS_EVENTS, useWsEvent, useWsReconnected } from '../api/ws'
-import { compactCN, compactNumber } from '../utils/format'
+import { PageHero } from '../components/PageHero'
+import { compactCN, compactNumber, obsColorStyle } from '../utils/format'
+import { Reveal } from '../utils/motion'
 import { copyText } from '../utils/clipboard'
-
-const { Text } = Typography
 
 /** 单张模型用量卡片：模型名（点击复制）+ 1h/24h/7d/30d 四个窗口的请求与 token。 */
 const ModelCard = memo(function ModelCard({ m }: { m: ModelUsage }) {
@@ -22,20 +22,25 @@ const ModelCard = memo(function ModelCard({ m }: { m: ModelUsage }) {
     ['7 天', m.w_7d],
     ['30 天', m.w_30d],
   ]
+  // 30 天有用量的模型亮起身份点，长期未用的模型转灰
+  const hasUsage = m.w_30d.requests > 0
   return (
-    <div className="panel" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, opacity: m.w_30d.requests > 0 ? 1 : 0.7 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, minWidth: 0 }}>
+    <div className="obs-card" style={{ ...obsColorStyle(hasUsage ? 'var(--accent)' : 'var(--text-faint)'), gap: 10, padding: 14 }}>
+      <span className="obs-card-glow" aria-hidden="true" />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+        <span className="obs-card-dot" aria-hidden="true" />
         <Tooltip title="点击复制模型名">
           <span
             className="mono"
             style={{
+              flex: 1,
+              minWidth: 0,
               fontWeight: 600,
               fontSize: 13,
               cursor: 'pointer',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
-              minWidth: 0,
             }}
             onClick={() => void copyName()}
           >
@@ -102,14 +107,21 @@ export default function Models() {
     return items.filter((m) => (!onlyUsed || m.w_30d.requests > 0) && (!kw || m.model.toLowerCase().includes(kw)))
   }, [items, keyword, onlyUsed])
 
+  const used30 = useMemo(() => items.filter((m) => m.w_30d.requests > 0).length, [items])
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div className="panel" style={{ padding: 16 }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', rowGap: 8, justifyContent: 'space-between', alignItems: 'center' }}>
-          <Text style={{ color: 'var(--text-secondary)', fontSize: 13, letterSpacing: '0.06em' }}>
-            模型用量 · 共 {items.length} 个模型
-          </Text>
-          <Space size={8} wrap>
+    <Reveal className="obs-page">
+      <PageHero
+        eyebrow="models · 用量审查"
+        title="模型用量"
+        desc="全部已知模型的 1 小时 / 24 小时 / 7 天 / 30 天窗口用量；网关请求产生后实时汇总。"
+        readouts={[
+          { label: '模型总数', value: items.length, tone: 'accent' },
+          { label: '30 天有用量', value: used30 },
+          { label: '当前展示', value: filtered.length },
+        ]}
+        actions={
+          <>
             <Input
               allowClear
               prefix={<SearchOutlined style={{ color: 'var(--text-faint)' }} />}
@@ -118,27 +130,36 @@ export default function Models() {
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
             />
-            <Text style={{ color: 'var(--text-secondary)', fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ color: 'var(--text-secondary)', fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
               仅看有用量
               <Switch size="small" checked={onlyUsed} onChange={setOnlyUsed} />
-            </Text>
-            <Button icon={<ReloadOutlined />} onClick={() => void load()} size="small" />
-          </Space>
+            </span>
+            <Button icon={<ReloadOutlined />} onClick={() => void load()} aria-label="刷新" />
+          </>
+        }
+      />
+      <section className="obs-section">
+        <div className="obs-section-head">
+          <span>模型清单</span>
+          <span className="obs-count-chip">{filtered.length}</span>
         </div>
-      </div>
-      <Spin spinning={loading}>
-        {filtered.length === 0 ? (
-          <div className="panel" style={{ padding: 40 }}>
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={items.length === 0 ? '暂无模型' : '无匹配模型'} />
-          </div>
-        ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
-            {filtered.map((m) => (
-              <ModelCard key={m.model} m={m} />
-            ))}
-          </div>
-        )}
-      </Spin>
-    </div>
+        <Spin spinning={loading}>
+          {filtered.length === 0 ? (
+            <div className="obs-empty">
+              <div className="obs-empty-title">{items.length === 0 ? '暂无模型' : '无匹配模型'}</div>
+              <div className="obs-empty-hint">模型首次被请求后就会出现在这里</div>
+            </div>
+          ) : (
+            <div className="obs-grid">
+              {filtered.map((m, i) => (
+                <Reveal key={m.model} className="obs-cell" delay={Math.min(i * 0.03, 0.35)}>
+                  <ModelCard m={m} />
+                </Reveal>
+              ))}
+            </div>
+          )}
+        </Spin>
+      </section>
+    </Reveal>
   )
 }

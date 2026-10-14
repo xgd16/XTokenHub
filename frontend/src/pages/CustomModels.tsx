@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { TableColumnsType } from 'antd'
-import { App, Button, Drawer, Form, Input, InputNumber, Popconfirm, Space, Switch, Table, Tag, Tooltip, Typography } from 'antd'
+import { App, Button, Drawer, Form, Input, InputNumber, Popconfirm, Space, Switch, Table, Tag, Tooltip } from 'antd'
 import { DeleteOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { customModelApi, type CustomModel, type CustomModelInput, type ModelMember } from '../api/customModel'
+import { PageHero } from '../components/PageHero'
 import { fullTime } from '../utils/format'
+import { Reveal } from '../utils/motion'
 import { DetailRows } from '../components/LogDetail'
 import { useIsMobile } from '../utils/useIsMobile'
-
-const { Text } = Typography
 
 /** 移动端保留的列 key，其余列收进展开行。 */
 const MOBILE_CUSTOM_KEYS = new Set(['name', 'status', 'actions'])
@@ -199,8 +199,26 @@ export default function CustomModels() {
   ]
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div className="panel" style={{ padding: 16 }}>
+    <Reveal className="obs-page">
+      <PageHero
+        eyebrow="custom models · 聚合路由"
+        title="自定义模型"
+        desc="把一组真实模型聚合成一个对外模型 ID，按「成员优先级 → 渠道优先级 → 原生透传」依次展开候选。"
+        readouts={[
+          { label: '自定义模型', value: total, tone: 'accent' },
+          { label: '本页启用', value: items.filter((cm) => cm.status === 1).length },
+        ]}
+        actions={
+          <>
+            <Button icon={<ReloadOutlined />} onClick={() => void load()} aria-label="刷新" />
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+              新建自定义模型
+            </Button>
+          </>
+        }
+      />
+
+      <div className="obs-panel">
         <Table<CustomModel>
           rowKey="id"
           loading={loading}
@@ -216,19 +234,6 @@ export default function CustomModels() {
             },
             showTotal: (t) => <span className="mono" style={{ color: 'var(--text-faint)' }}>共 {t} 个自定义模型</span>,
           }}
-          title={() => (
-            <div style={{ display: 'flex', flexWrap: 'wrap', rowGap: 8, justifyContent: 'space-between', alignItems: 'center' }}>
-              <Text style={{ color: 'var(--text-secondary)', fontSize: 13, letterSpacing: '0.06em' }}>
-                自定义模型 · 相似模型聚合成一个 ID 按优先级自动路由
-              </Text>
-              <Space>
-                <Button icon={<ReloadOutlined />} onClick={() => void load()} size="small" />
-                <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-                  新建自定义模型
-                </Button>
-              </Space>
-            </div>
-          )}
           expandable={isMobile ? {
             expandedRowRender: (cm) => (
               <DetailRows
@@ -251,8 +256,8 @@ export default function CustomModels() {
         />
       </div>
 
-      <div className="panel mono" style={{ padding: '12px 16px', fontSize: 12, color: 'var(--text-secondary)' }}>
-        <div style={{ marginBottom: 6, color: 'var(--text-faint)', letterSpacing: '0.06em' }}>路由规则</div>
+      <div className="obs-hint">
+        <div className="obs-hint-label">路由规则</div>
         <div>客户端请求自定义模型 ID 时，网关按「成员优先级（数值小者优先）→ 渠道优先级 → 原生透传优先」展开候选并逐个尝试；</div>
         <div>请求日志与统计记录实际使用的成员模型；模型 ID 也会出现在 GET /v1/models 能力清单中。</div>
       </div>
@@ -316,6 +321,6 @@ export default function CustomModels() {
           </Form.Item>
         </Form>
       </Drawer>
-    </div>
+    </Reveal>
   )
 }

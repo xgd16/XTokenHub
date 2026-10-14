@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { TableColumnsType } from 'antd'
-import { App, AutoComplete, Button, Drawer, Form, Input, Popconfirm, Select, Space, Switch, Table, Tag, Typography } from 'antd'
+import { App, AutoComplete, Button, Drawer, Form, Input, Popconfirm, Select, Space, Switch, Table, Tag } from 'antd'
 import { DeleteOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
   REASONING_TIERS,
@@ -9,11 +9,11 @@ import {
   type ReasoningRewrite,
   type ReasoningRewriteInput,
 } from '../api/reasoningRewrite'
+import { PageHero } from '../components/PageHero'
 import { fullTime } from '../utils/format'
+import { Reveal } from '../utils/motion'
 import { DetailRows } from '../components/LogDetail'
 import { useIsMobile } from '../utils/useIsMobile'
-
-const { Text } = Typography
 
 /** 档位目标选项。 */
 const TARGET_OPTIONS = [
@@ -224,8 +224,26 @@ export default function ReasoningRewrites() {
   ]
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div className="panel" style={{ padding: 16 }}>
+    <Reveal className="obs-page">
+      <PageHero
+        eyebrow="reasoning · 档位改写"
+        title="思维档位改写"
+        desc="按上游模型把 reasoning_effort 档位翻译成 thinking 开 / 关，未命中的档位原样透传。"
+        readouts={[
+          { label: '改写规则', value: total, tone: 'accent' },
+          { label: '本页启用', value: items.filter((r) => r.status === 1).length },
+        ]}
+        actions={
+          <>
+            <Button icon={<ReloadOutlined />} onClick={() => void load()} aria-label="刷新" />
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+              新建改写规则
+            </Button>
+          </>
+        }
+      />
+
+      <div className="obs-panel">
         <Table<ReasoningRewrite>
           rowKey="id"
           loading={loading}
@@ -241,19 +259,6 @@ export default function ReasoningRewrites() {
             },
             showTotal: (t) => <span className="mono" style={{ color: 'var(--text-faint)' }}>共 {t} 条改写规则</span>,
           }}
-          title={() => (
-            <div style={{ display: 'flex', flexWrap: 'wrap', rowGap: 8, justifyContent: 'space-between', alignItems: 'center' }}>
-              <Text style={{ color: 'var(--text-secondary)', fontSize: 13, letterSpacing: '0.06em' }}>
-                思维档位改写 · 按上游模型把 reasoning_effort 档位翻译成 thinking 开/关
-              </Text>
-              <Space>
-                <Button icon={<ReloadOutlined />} onClick={() => void load()} size="small" />
-                <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-                  新建改写规则
-                </Button>
-              </Space>
-            </div>
-          )}
           expandable={isMobile ? {
             expandedRowRender: (rule) => (
               <DetailRows
@@ -269,8 +274,8 @@ export default function ReasoningRewrites() {
         />
       </div>
 
-      <div className="panel mono" style={{ padding: '12px 16px', fontSize: 12, color: 'var(--text-secondary)' }}>
-        <div style={{ marginBottom: 6, color: 'var(--text-faint)', letterSpacing: '0.06em' }}>改写规则</div>
+      <div className="obs-hint">
+        <div className="obs-hint-label">改写规则</div>
         <div>仅对命中的上游模型名生效（自定义模型组按成员模型匹配）；未命中的档位保留原样透传，未列出的模型完全不受影响；</div>
         <div>请求体已有 thinking 配置时只删除档位字段、不覆盖；客户端未带档位时按「缺省注入」补 thinking（不配置则不注入）。</div>
       </div>
@@ -342,6 +347,6 @@ export default function ReasoningRewrites() {
           </Form.Item>
         </Form>
       </Drawer>
-    </div>
+    </Reveal>
   )
 }

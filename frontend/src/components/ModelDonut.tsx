@@ -28,7 +28,8 @@ export default function ModelDonut({ slices, total, size = 220, loading = false 
           </svg>
         </div>
         <div style={{ flex: 1, minWidth: 240 }}>
-          {[0, 1, 2, 3].map((i) => (
+          {/* 5 行 = 实际最多渲染的扇区数（top 5），行数与真实一致，加载完成时下方不跳位 */}
+          {[0, 1, 2, 3, 4].map((i) => (
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px', borderBottom: '1px solid var(--border-faint)' }}>
               <span className="skeleton-bar" style={{ width: 9, height: 9, borderRadius: '50%', animationDelay: `${i * 0.1}s` }} />
               <span className="skeleton-bar" style={{ width: `${50 + i * 8}%`, height: 13, animationDelay: `${i * 0.1 + 0.05}s` }} />

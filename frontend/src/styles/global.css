@@ -249,21 +249,7 @@ body::before {
   background: transparent;
 }
 
-/* 品牌字标 */
-.brand {
-  font-family: var(--font-mono);
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-.brand .accent {
-  color: var(--accent);
-}
-
-/* 侧边栏菜单压暗背景，融入面板 */
-.sider-panel {
-  background: transparent !important;
-  border-right: 1px solid var(--border-faint);
-}
+/* 品牌字标由外壳组件（rail-mark / bar-mobile-brand）承担，见 styles/shell.css */
 
 /* ============ 移动端适配（< 768px） ============ */
 @media (max-width: 767px) {

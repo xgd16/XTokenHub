@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Alert,
   Button,
-  Card,
   Input,
   InputNumber,
   Modal,
@@ -39,8 +38,10 @@ import {
   type Currency,
 } from '../utils/money'
 import { setMoneyOptions } from '../utils/useMoneyFormat'
+import { PageHero } from '../components/PageHero'
 import { Reveal } from '../utils/motion'
 import { useNow } from '../utils/useNow'
+import { useHolidayCalendar } from '../utils/useHolidayCalendar'
 import { peakPeriodAt } from '../utils/peakWindow'
 
 const { Text } = Typography
@@ -530,6 +531,8 @@ export default function Settings() {
 
   // 时段列的「当前峰/谷」标记随真实时间变化，每 30s 重算一次
   const now = useNow()
+  // 拉取节假日年历：`!H` / `W` 记号的时段判定依赖它
+  useHolidayCalendar()
 
   const priceColumns: TableColumnsType<ModelPrice> = useMemo(
     () => [
@@ -658,20 +661,22 @@ export default function Settings() {
   const lastSyncText = status?.last_sync_at ? new Date(status.last_sync_at).toLocaleString() : '尚未同步'
 
   return (
-    <Reveal style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <Card
-        className="panel"
-        styles={{
-          body: { padding: '16px 20px' },
-          header: { borderBottom: '1px solid var(--border-faint)' },
-        }}
-        title={
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <InfoCircleOutlined style={{ color: 'var(--accent)' }} />
-            <span style={{ fontSize: 14, fontWeight: 500 }}>会话标识配置</span>
-          </div>
-        }
-      >
+    <Reveal className="obs-page">
+      <PageHero
+        eyebrow="settings · 控制台配置"
+        title="配置管理"
+        desc="会话标识、计费汇率与预算、数据保留与聚合、上游凭证、模型价格表都在这里集中维护。"
+        readouts={[
+          { label: '会话标识', value: configs.length, tone: 'accent' },
+          { label: '价格条目', value: status?.price_count ?? 0 },
+          { label: '上次价格同步', value: status?.last_sync_at ? new Date(status.last_sync_at).toLocaleDateString() : '未同步' },
+        ]}
+      />
+      <section className="obs-panel">
+        <div className="obs-panel-head">
+          <InfoCircleOutlined className="obs-panel-head-icon" />
+          <div className="obs-panel-head-title">会话标识配置</div>
+        </div>
         <div style={{ marginBottom: 16 }}>
           <Text type="secondary" style={{ fontSize: 13 }}>
             配置可识别的 HTTP Header 中的会话标识。网关会按这里启用的 Header
@@ -726,21 +731,13 @@ export default function Settings() {
             添加
           </Button>
         </div>
-      </Card>
+      </section>
 
-      <Card
-        className="panel"
-        styles={{
-          body: { padding: '16px 20px' },
-          header: { borderBottom: '1px solid var(--border-faint)' },
-        }}
-        title={
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <InfoCircleOutlined style={{ color: 'var(--accent)' }} />
-            <span style={{ fontSize: 14, fontWeight: 500 }}>会话聚合说明</span>
-          </div>
-        }
-      >
+      <section className="obs-panel">
+        <div className="obs-panel-head">
+          <InfoCircleOutlined className="obs-panel-head-icon" />
+          <div className="obs-panel-head-title">会话聚合说明</div>
+        </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div>
             <Text strong style={{ fontSize: 13 }}>会话聚合规则</Text>
@@ -781,21 +778,13 @@ export default function Settings() {
             </div>
           </div>
         </div>
-      </Card>
+      </section>
 
-      <Card
-        className="panel"
-        styles={{
-          body: { padding: '16px 20px' },
-          header: { borderBottom: '1px solid var(--border-faint)' },
-        }}
-        title={
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <InfoCircleOutlined style={{ color: 'var(--accent)' }} />
-            <span style={{ fontSize: 14, fontWeight: 500 }}>计费与展示</span>
-          </div>
-        }
-      >
+      <section className="obs-panel">
+        <div className="obs-panel-head">
+          <InfoCircleOutlined className="obs-panel-head-icon" />
+          <div className="obs-panel-head-title">计费与展示</div>
+        </div>
         <Text type="secondary" style={{ fontSize: 13, display: 'block', marginBottom: 16 }}>
           费用一律以美元存储与计算，这里只影响展示。汇率需手工维护（不接入外部汇率接口）。
           它同时用于把人民币计价的价格行折算成美元记账。
@@ -864,21 +853,13 @@ export default function Settings() {
         <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 12 }}>
           月度预算仅用于仪表盘的「本月预计花费」超支提示，不会拦截或限流请求。
         </Text>
-      </Card>
+      </section>
 
-      <Card
-        className="panel"
-        styles={{
-          body: { padding: '16px 20px' },
-          header: { borderBottom: '1px solid var(--border-faint)' },
-        }}
-        title={
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <DatabaseOutlined style={{ color: 'var(--accent)' }} />
-            <span style={{ fontSize: 14, fontWeight: 500 }}>数据管理</span>
-          </div>
-        }
-      >
+      <section className="obs-panel">
+        <div className="obs-panel-head">
+          <DatabaseOutlined className="obs-panel-head-icon" />
+          <div className="obs-panel-head-title">数据管理</div>
+        </div>
         <Text type="secondary" style={{ fontSize: 13, display: 'block', marginBottom: 16 }}>
           累计统计（总 Token、连续天数、花费预测、模型用量）按本地日自动聚合落库：
           完整历史日读聚合表、仅当天实时计算，数据量增大后查询成本只与天数相关。
@@ -986,21 +967,13 @@ export default function Settings() {
             删除明细后累计统计保持不变。
           </Text>
         )}
-      </Card>
+      </section>
 
-      <Card
-        className="panel"
-        styles={{
-          body: { padding: '16px 20px' },
-          header: { borderBottom: '1px solid var(--border-faint)' },
-        }}
-        title={
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <KeyOutlined style={{ color: 'var(--accent)' }} />
-            <span style={{ fontSize: 14, fontWeight: 500 }}>MiMo 余额凭证</span>
-          </div>
-        }
-      >
+      <section className="obs-panel">
+        <div className="obs-panel-head">
+          <KeyOutlined className="obs-panel-head-icon" />
+          <div className="obs-panel-head-title">MiMo 余额凭证</div>
+        </div>
         <Text type="secondary" style={{ fontSize: 13, display: 'block', marginBottom: 12 }}>
           小米 MiMo 官方未开放余额接口，这里保存网页控制台的会话 Cookie，渠道页用它查询平台余额。
           凭证由小米服务端管理：过期后渠道页余额显示「查询失败（凭证已过期）」，回本页粘贴最新 Cookie 即可。
@@ -1041,39 +1014,31 @@ export default function Settings() {
           {mimoUpdatedAt ? `凭证更新于 ${new Date(mimoUpdatedAt).toLocaleString()}。` : '尚未配置凭证。'}
           与渠道 api_key 同一安全姿态：明文存储，仅本机管理后台可见。
         </Text>
-      </Card>
+      </section>
 
-      <Card
-        className="panel"
-        styles={{
-          body: { padding: '16px 20px' },
-          header: { borderBottom: '1px solid var(--border-faint)' },
-        }}
-        title={
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <InfoCircleOutlined style={{ color: 'var(--accent)' }} />
-            <span style={{ fontSize: 14, fontWeight: 500 }}>模型价格表</span>
-          </div>
-        }
-        extra={
-          <Space>
-            <Button size="small" icon={<SyncOutlined />} onClick={() => void syncPrices()} loading={syncing}>
-              立即同步
-            </Button>
-            <Popconfirm
-              title="按当前价格重算全部历史费用？"
-              description="会覆盖已有费用值；保留期内（默认 90 天）的请求都会重新计价"
-              onConfirm={() => void recompute()}
-              okText="重算"
-              cancelText="取消"
-            >
-              <Button size="small" icon={<ReloadOutlined />} loading={recomputing}>
-                重算历史费用
+      <section className="obs-panel">
+        <div className="obs-panel-head">
+          <InfoCircleOutlined className="obs-panel-head-icon" />
+          <div className="obs-panel-head-title">模型价格表</div>
+          <div className="obs-panel-head-extra">
+            <Space>
+              <Button size="small" icon={<SyncOutlined />} onClick={() => void syncPrices()} loading={syncing}>
+                立即同步
               </Button>
-            </Popconfirm>
-          </Space>
-        }
-      >
+              <Popconfirm
+                title="按当前价格重算全部历史费用？"
+                description="会覆盖已有费用值；保留期内（默认 90 天）的请求都会重新计价"
+                onConfirm={() => void recompute()}
+                okText="重算"
+                cancelText="取消"
+              >
+                <Button size="small" icon={<ReloadOutlined />} loading={recomputing}>
+                  重算历史费用
+                </Button>
+              </Popconfirm>
+            </Space>
+          </div>
+        </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'center', marginBottom: 12 }}>
           <Text type="secondary" style={{ fontSize: 12 }}>
             单价单位：<Text code style={{ fontSize: 12 }}>该行币种 / 百万 token</Text>（同步来源恒为 USD）
@@ -1159,21 +1124,13 @@ export default function Settings() {
             onChange: (p) => void loadPrices(p),
           }}
         />
-      </Card>
+      </section>
 
-      <Card
-        className="panel"
-        styles={{
-          body: { padding: '16px 20px' },
-          header: { borderBottom: '1px solid var(--border-faint)' },
-        }}
-        title={
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <InfoCircleOutlined style={{ color: 'var(--accent)' }} />
-            <span style={{ fontSize: 14, fontWeight: 500 }}>计价规则</span>
-          </div>
-        }
-      >
+      <section className="obs-panel">
+        <div className="obs-panel-head">
+          <InfoCircleOutlined className="obs-panel-head-icon" />
+          <div className="obs-panel-head-title">计价规则</div>
+        </div>
         <ul style={{ margin: 0, padding: '0 0 0 20px' }}>
           <li>
             <Text type="secondary" style={{ fontSize: 13 }}>
@@ -1203,7 +1160,7 @@ export default function Settings() {
             </Text>
           </li>
         </ul>
-      </Card>
+      </section>
 
       <Modal
         open={!!editing}
@@ -1329,6 +1286,11 @@ export default function Settings() {
                 placeholder={DEEPSEEK_PEAK_WINDOW}
                 className="mono"
               />
+              <Text type="secondary" style={{ fontSize: 12, marginTop: 4, display: 'block' }}>
+                星期支持区间/列表（如 <span className="mono">1-5</span>、<span className="mono">1,6,7</span>）；
+                记号 <span className="mono">!H</span> = 放假日（含调休连休）全天空闲价、
+                <span className="mono">W</span> = 调休补班日（周末上班）按工作日计入高峰 —— 依节假日年历判定，无年历数据时按星期兜底。
+              </Text>
             </div>
             {editing.peakWindow.trim() !== '' && (
               <div>

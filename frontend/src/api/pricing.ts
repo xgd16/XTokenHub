@@ -11,7 +11,9 @@ export interface ModelPrice {
   cache_read_cost_per_token: number
   cache_write_cost_per_token: number
   /**
-   * 高峰时段规则（北京时间），如 `1-5;09:00-12:00,14:00-18:00`；空 = 不启用时段价。
+   * 高峰时段规则（北京时间），如 `1-5,!H;09:00-12:00,14:00-18:00`；空 = 不启用时段价。
+   * 星期段可附节假日记号（大小写不敏感）：`!H` 放假日（含调休连休）全天不计高峰、
+   * `W` 调休补班日视为命中星期集合（判定口径见 utils/peakWindow）。
    * off_peak_* 为对应空闲时段费率；未配置（0）时回退高峰费率。
    */
   peak_window: string
@@ -32,8 +34,8 @@ export interface ModelPrice {
   updated_at: string
 }
 
-/** DeepSeek 官方错峰规则：工作日 9:00-12:00、14:00-18:00 为高峰（北京时间）。 */
-export const DEEPSEEK_PEAK_WINDOW = '1-5;09:00-12:00,14:00-18:00'
+/** DeepSeek 官方错峰规则：工作日 9:00-12:00、14:00-18:00 为高峰（北京时间），`!H` 放假日全天空闲。 */
+export const DEEPSEEK_PEAK_WINDOW = '1-5,!H;09:00-12:00,14:00-18:00'
 
 /** 从价格表同步到本地的结果。 */
 export interface SyncResult {

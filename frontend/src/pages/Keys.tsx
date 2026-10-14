@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TableColumnsType } from 'antd'
-import { App, Button, Drawer, Form, Input, Popconfirm, Space, Switch, Table, Tag, Tooltip, Typography } from 'antd'
+import { App, Button, Drawer, Form, Input, Popconfirm, Space, Switch, Table, Tag, Tooltip } from 'antd'
 import { CopyOutlined, KeyOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { keyApi, maskKey, type APIKey, type KeyInput } from '../api/key'
 import { statsApi, type GroupStat } from '../api/stats'
 import { WS_EVENTS, useWsEvent, useWsReconnected } from '../api/ws'
+import { PageHero } from '../components/PageHero'
 import { compactCN, fullTime } from '../utils/format'
+import { Reveal } from '../utils/motion'
 import { DetailRows } from '../components/LogDetail'
 import { useIsMobile } from '../utils/useIsMobile'
 import { copyText } from '../utils/clipboard'
-
-const { Text } = Typography
 
 /** 移动端保留的列 key，其余列收进展开行。 */
 const MOBILE_KEY_KEYS = new Set(['name', 'key', 'actions'])
@@ -135,9 +135,30 @@ export default function Keys() {
     else message.error('复制失败，请手动选择复制')
   }
 
+  // 本页启用数（服务端只回分页页数据，读数以「本页」口径标注）
+  const enabledOnPage = items.filter((k) => k.status === 1).length
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div className="panel" style={{ padding: 16 }}>
+    <Reveal className="obs-page">
+      <PageHero
+        eyebrow="keys · 访问凭证"
+        title="API Keys"
+        desc="调用方鉴权与用量统计：密钥用于 agent 访问网关，24 小时用量按密钥名聚合。"
+        readouts={[
+          { label: '密钥总数', value: total, tone: 'accent' },
+          { label: '本页启用', value: enabledOnPage },
+        ]}
+        actions={
+          <>
+            <Button icon={<ReloadOutlined />} onClick={() => void load()} aria-label="刷新" />
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+              新建密钥
+            </Button>
+          </>
+        }
+      />
+
+      <div className="obs-panel">
         <Table<APIKey>
           rowKey="id"
           loading={loading}
@@ -150,19 +171,6 @@ export default function Keys() {
             onChange: (p) => setPage(p),
             showTotal: (t) => <span className="mono" style={{ color: 'var(--text-faint)' }}>共 {t} 个密钥</span>,
           }}
-          title={() => (
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Text style={{ color: 'var(--text-secondary)', fontSize: 13, letterSpacing: '0.06em' }}>
-                API Keys · 调用方鉴权与用量统计
-              </Text>
-              <Space>
-                <Button icon={<ReloadOutlined />} onClick={() => void load()} size="small" />
-                <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-                  新建密钥
-                </Button>
-              </Space>
-            </div>
-          )}
           expandable={isMobile ? {
             expandedRowRender: (k) => (
               <DetailRows
@@ -295,10 +303,10 @@ export default function Keys() {
         />
       </div>
 
-      <div className="panel mono" style={{ padding: '12px 16px', fontSize: 12, color: 'var(--text-secondary)' }}>
-        <div style={{ marginBottom: 6, color: 'var(--text-faint)', letterSpacing: '0.06em' }}>调用方式</div>
-        <div style={{ wordBreak: 'break-all' }}>OpenAI 兼容：base_url = <span style={{ color: 'var(--accent)' }}>http://&lt;host&gt;:8080/v1</span>，api_key = 本页密钥（Authorization: Bearer）</div>
-        <div style={{ wordBreak: 'break-all' }}>Anthropic 兼容：base_url = <span style={{ color: 'var(--accent)' }}>http://&lt;host&gt;:8080</span>，密钥经 x-api-key 头传递同样有效</div>
+      <div className="obs-hint">
+        <div className="obs-hint-label">调用方式</div>
+        <div>OpenAI 兼容：base_url = <span style={{ color: 'var(--accent)' }}>http://&lt;host&gt;:8080/v1</span>，api_key = 本页密钥（Authorization: Bearer）</div>
+        <div>Anthropic 兼容：base_url = <span style={{ color: 'var(--accent)' }}>http://&lt;host&gt;:8080</span>，密钥经 x-api-key 头传递同样有效</div>
       </div>
 
       <Drawer
@@ -343,6 +351,6 @@ export default function Keys() {
           </Form.Item>
         </Form>
       </Drawer>
-    </div>
+    </Reveal>
   )
 }

@@ -1,3 +1,5 @@
+import type { CSSProperties } from 'react'
+
 /** 数字与时间格式化工具。 */
 
 /** 大数缩写：1234567 -> 1.23M */
@@ -132,6 +134,27 @@ const TOOL_PATTERNS: [RegExp, string][] = [
   [/openai/i, 'OpenAI SDK'],
   [/anthropic/i, 'Anthropic SDK'],
 ]
+
+/**
+ * 把身份色写进元素 CSS 变量（--obs-color），供 obs-card 描边/辉光/箭头取用。
+ * 视觉规则见 styles/console.css。
+ */
+export function obsColorStyle(color: string): CSSProperties {
+  return { '--obs-color': color } as CSSProperties
+}
+
+/**
+ * 稳定哈希色（同串同色）：给渠道 / 模型 / 命名空间等实体一个可辨识的身份色相。
+ * 空串返回中性灰。
+ */
+export function hashColor(s: string, saturation = 52, lightness = 56): string {
+  if (!s) return '#8b98a9'
+  let h = 0
+  for (let i = 0; i < s.length; i++) {
+    h = (h * 31 + s.charCodeAt(i)) % 360
+  }
+  return `hsl(${h}, ${saturation}%, ${lightness}%)`
+}
 
 /**
  * 从 User-Agent 提取调用方工具短名，优先「产品名/版本」（如 "ZCode/3.11.2 ai-sdk/..." ->
