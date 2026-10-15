@@ -1,26 +1,287 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from 'react'
-import type { MemoryGraph as GraphData, MemoryGraphEdge, MemoryGraphNode } from '../api/memory'
-import { namespaceColor } from '../utils/memoryMeta'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+// cytoscape 的类型用 `export =` 声明，默认类型导入可同时拿到命名空间（StylesheetJson / Css.Node 等）。
+import type cytoscape from 'cytoscape'
+import type {
+  Core, CoseLayoutOptions, ElementDefinition, EventObject, Layouts, NodeSingular,
+} from 'cytoscape'
+import { Button, Tooltip } from 'antd'
+import { CompressOutlined, MinusOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
+import type {
+  MemoryGraph as GraphData, MemoryGraphNode, MemoryKind, MemoryLinkRelation,
+} from '../api/memory'
+import { kindLabel, namespaceColor } from '../utils/memoryMeta'
+import { useChartPalette, type ChartPalette } from '../theme'
 
 // 节点/图例着色与星图卡片同源（utils/memoryMeta），从此处再导出以保持既有引用。
 export { namespaceColor }
 
-/** 关系边样式：替代/冲突/派生用虚线区分。 */
-const RELATION_STYLE: Record<string, { color: string; dash: string }> = {
-  related: { color: 'var(--accent)', dash: '' },
-  supersedes: { color: '#e8a33d', dash: '6 4' },
-  conflicts: { color: '#e8664f', dash: '2 3' },
-  derived_from: { color: '#9c7be8', dash: '6 4' },
+/** cytoscape 工厂函数签名。 */
+type CytoscapeFactory = typeof import('cytoscape')
+
+/** 动态载入的模块解析成工厂：ESM 走 `.default`，CJS（vitest/node）直接就是函数本体。 */
+function resolveFactory(mod: unknown): CytoscapeFactory {
+  const m = mod as { default?: CytoscapeFactory } & CytoscapeFactory
+  return m.default ?? m
 }
 
-interface SimNode {
+/** 缩放到此倍数以下时只给重要节点留标签，避免密图上文字糊成一片。 */
+const LABEL_FAR_ZOOM = 0.65
+
+/** 关系边语义样式：颜色 + 虚实 + 是否有向箭头。 */
+interface RelationStyle {
+  label: string
+  color: (pal: ChartPalette) => string
+  dash: boolean
+  directed: boolean
+}
+
+const RELATION_STYLE: Record<MemoryLinkRelation, RelationStyle> = {
+  related: { label: '相关', color: (p) => p.accent, dash: false, directed: false },
+  supersedes: { label: '替代', color: (p) => p.amber, dash: true, directed: true },
+  conflicts: { label: '冲突', color: (p) => p.coral, dash: true, directed: true },
+  derived_from: { label: '派生自', color: (p) => p.violet, dash: true, directed: true },
+}
+const RELATIONS = Object.keys(RELATION_STYLE) as MemoryLinkRelation[]
+
+/** 后端新增的关系类型兜底为「相关」样式。 */
+function relationStyle(rel: string): RelationStyle {
+  return RELATION_STYLE[rel as MemoryLinkRelation] ?? RELATION_STYLE.related
+}
+
+// ---- 数据准备 ----
+
+/** 节点视觉权重：重要度为主、关联度为辅，置顶略微加权（只影响相对大小）。 */
+function rawWeight(n: MemoryGraphNode): number {
+  return n.importance * 2 + Math.min(n.degree, 8) * 1.2 + (n.pinned ? 3 : 0)
+}
+
+export interface PreparedGraph {
+  elements: ElementDefinition[]
+  /** 按名称排序的命名空间（顺序稳定 → 颜色跨刷新不跳），附出现次数。 */
+  namespaces: { name: string; color: string; count: number }[]
+  /** 图例上展示的关系类型与数量。 */
+  relCounts: { rel: MemoryLinkRelation; count: number }[]
+  /** 无任何关系的节点数（布局时单列到主连通块下方）。 */
+  orphanCount: number
+}
+
+/** 图数据 → cytoscape 元素集 + 图例统计（纯函数，便于测试）。 */
+export function prepareGraph(graph: GraphData): PreparedGraph {
+  // 取色按名字排序而不是按数量，否则节点增减会让颜色整片跳变。
+  const nsCount = new Map<string, number>()
+  graph.nodes.forEach((n) => nsCount.set(n.namespace, (nsCount.get(n.namespace) ?? 0) + 1))
+  const namespaces = Array.from(nsCount, ([name, count]) => ({ name, color: namespaceColor(name), count }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'))
+  const nsIdx = new Map(namespaces.map((s, i) => [s.name, i]))
+
+  const raws = graph.nodes.map(rawWeight)
+  const lo = raws.length ? Math.min(...raws) : 0
+  const hi = raws.length ? Math.max(...raws) : 0
+  const span = hi - lo || 1
+
+  const ids = new Set<number>()
+  const elements: ElementDefinition[] = graph.nodes.map((n, i) => {
+    ids.add(n.id)
+    return {
+      group: 'nodes',
+      data: {
+        id: `n${n.id}`,
+        // 业务主键单独存一份，回调/tooltip 不用再从 DOM id 剥前缀
+        key: n.id,
+        title: n.title,
+        ns: n.namespace,
+        nsIdx: String(nsIdx.get(n.namespace) ?? 0),
+        kind: n.kind,
+        importance: n.importance,
+        pinned: n.pinned,
+        degree: n.degree,
+        weight: Math.round(((raws[i] - lo) / span) * 100),
+        orphan: n.degree === 0,
+      },
+    }
+  })
+
+  // 只保留两端节点都在图内的边，否则 cytoscape 会抛错。
+  const relCount = new Map<MemoryLinkRelation, number>()
+  graph.edges.forEach((e) => {
+    if (!ids.has(e.from_id) || !ids.has(e.to_id)) return
+    relCount.set(e.relation, (relCount.get(e.relation) ?? 0) + 1)
+    elements.push({
+      group: 'edges',
+      data: {
+        id: `e${e.id}`,
+        source: `n${e.from_id}`,
+        target: `n${e.to_id}`,
+        rel: e.relation,
+        relLabel: relationStyle(e.relation).label,
+      },
+    })
+  })
+
+  return {
+    elements,
+    namespaces,
+    relCounts: RELATIONS.map((rel) => ({ rel, count: relCount.get(rel) ?? 0 })).filter((r) => r.count > 0),
+    orphanCount: graph.nodes.filter((n) => n.degree === 0).length,
+  }
+}
+
+// ---- 样式表 ----
+
+/** 由色板 + 命名空间取色生成 cytoscape 样式表（canvas 读不到 CSS 变量，必须给具体色值）。 */
+export function buildStyle(pal: ChartPalette, nsColors: string[]): cytoscape.StylesheetJson {
+  const node: cytoscape.Css.Node = {
+    'background-color': '#8b98a9',
+    width: 'mapData(weight, 0, 100, 24, 48)',
+    height: 'mapData(weight, 0, 100, 24, 48)',
+    'border-width': 2,
+    'border-color': pal.track,
+    label: 'data(title)',
+    color: pal.textSecondary,
+    'font-size': 11,
+    'font-family': 'IBM Plex Sans, PingFang SC, Microsoft YaHei, system-ui, sans-serif',
+    // 标签放圆下方：圆本身是视觉锚点，标题不压圆。
+    'text-valign': 'bottom',
+    'text-halign': 'center',
+    'text-margin-y': 6,
+    // 单行 + 省略号：标题全貌在悬浮卡里，图上不铺开多行，节点不会被文字撑变形。
+    'text-wrap': 'ellipsis',
+    'text-max-width': '124px',
+    'text-background-color': pal.tooltipBg,
+    'text-background-opacity': 0.6,
+    'text-background-padding': '2px',
+    'text-background-shape': 'roundrectangle',
+    // 透明 overlay：让带 padding 的整个命中区都可点，小节点也好点中。
+    'overlay-opacity': 0,
+    'transition-property': 'opacity, border-width, border-color, text-opacity',
+    'transition-duration': 150,
+  }
+
+  const style: cytoscape.StylesheetJson = [{ selector: 'node', style: node }]
+
+  nsColors.forEach((color, i) => {
+    style.push({ selector: `node[nsIdx = "${i}"]`, style: { 'background-color': color } })
+  })
+
+  style.push(
+    // 置顶/选中/悬停靠 border 宽度与颜色区分，不动半径，视觉更稳。
+    { selector: 'node.pinned', style: { 'border-color': pal.amber, 'border-width': 3 } },
+    { selector: 'node.selected', style: { 'border-color': pal.accent, 'border-width': 4, 'z-index': 20 } },
+    { selector: 'node.hovered', style: { 'border-color': pal.hoverStroke, 'border-width': 3, 'z-index': 30 } },
+
+    { selector: 'edge', style: {
+      'curve-style': 'bezier',
+      width: 1.5,
+      'line-color': pal.grid,
+      opacity: 0.75,
+      'arrow-scale': 0.85,
+      'target-arrow-shape': 'none',
+      label: 'data(relLabel)',
+      color: pal.textSecondary,
+      'font-size': 10,
+      'text-rotation': 'autorotate',
+      'text-margin-y': -4,
+      'text-background-color': pal.tooltipBg,
+      'text-background-opacity': 0.75,
+      'text-background-padding': '2px',
+      // 关系名默认隐藏，只有邻接高亮时显示，否则密图上全是字。
+      'text-opacity': 0,
+      'transition-property': 'opacity, line-color, width, text-opacity',
+      'transition-duration': 150,
+    } },
+  )
+
+  RELATIONS.forEach((rel) => {
+    const r = RELATION_STYLE[rel]
+    const color = r.color(pal)
+    style.push({
+      selector: `edge[rel = "${rel}"]`,
+      style: {
+        'line-color': color,
+        'line-style': r.dash ? 'dashed' : 'solid',
+        'target-arrow-shape': r.directed ? 'triangle' : 'none',
+        'target-arrow-color': color,
+      },
+    })
+  })
+
+  style.push(
+    { selector: 'edge.highlighted', style: { width: 2.4, opacity: 1, 'text-opacity': 1, 'z-index': 20 } },
+    { selector: 'node.label-off', style: { 'text-opacity': 0 } },
+    { selector: 'node.label-off.hovered, node.label-off.selected', style: { 'text-opacity': 1 } },
+    { selector: 'edge.label-off.highlighted', style: { 'text-opacity': 1 } },
+    // 淡出：悬停聚焦邻接 / 图例按命名空间筛除时用。
+    { selector: '.faded', style: { opacity: 0.12 } },
+    { selector: 'edge.faded', style: { opacity: 0.04 } },
+  )
+
+  return style
+}
+
+// ---- 布局 ----
+
+/** cose 参数：斥力/边长/向心力调到「圆之间留白、簇之间不散」的观感。 */
+const LAYOUT_OPTIONS: CoseLayoutOptions = {
+  name: 'cose',
+  animate: false,
+  randomize: true,
+  fit: false, // 孤立节点排完再统一 fit
+  padding: 40,
+  nodeRepulsion: 9000,
+  idealEdgeLength: 130,
+  edgeElasticity: 90,
+  nestingFactor: 1.2,
+  gravity: 0.4,
+  componentSpacing: 90,
+  numIter: 1200,
+  initialTemp: 220,
+  coolingFactor: 0.94,
+  minTemp: 1,
+  nodeDimensionsIncludeLabels: true,
+}
+
+/**
+ * 孤立节点（无任何关系）不交给力导向：cose 会把它们全堆到圆心。
+ * 布局结束后按网格排在主连通块下方，再整体 fit。
+ */
+function placeOrphans(cy: Core): void {
+  // 按 data 判定而不是 `.orphan` 类：类名会被 selected/faded 等样式类一起改写。
+  const orphans = cy.nodes().filter((n) => n.data('orphan') === true)
+  if (orphans.length === 0) return
+  const linked = cy.nodes().filter((n) => n.data('orphan') !== true)
+  const bb = linked.nonempty() ? linked.boundingBox() : { x1: -200, y1: -200, x2: 200, y2: 200 }
+  const cols = Math.max(1, Math.ceil(Math.sqrt(orphans.length * 1.7)))
+  const gap = 64
+  const top = bb.y2 + gap
+  const startX = (bb.x1 + bb.x2) / 2 - ((cols - 1) * gap) / 2
+  cy.batch(() => {
+    orphans.forEach((n, i) => {
+      n.position({ x: startX + (i % cols) * gap, y: top + Math.floor(i / cols) * gap })
+    })
+  })
+}
+
+// ---- 悬浮卡 ----
+
+interface Neighbor {
   id: number
+  title: string
+  rel: MemoryLinkRelation
+}
+
+interface HoverInfo {
+  id: number
+  /** 节点在画布内的渲染坐标（相对容器左上角）。 */
   x: number
   y: number
-  vx: number
-  vy: number
-  fixed: boolean
+  title: string
+  ns: string
+  kind: MemoryKind
+  importance: number
+  degree: number
+  pinned: boolean
+  orphan: boolean
+  neighbors: Neighbor[]
 }
 
 interface Props {
@@ -34,380 +295,441 @@ interface Props {
 }
 
 /**
- * 记忆关系图：SVG 力导向图（自研弹簧-斥力模型，零第三方依赖）。
- * 节点按命名空间着色、大小按重要度+度数；支持拖拽/平移/缩放/点击。
+ * 记忆关系图：基于 cytoscape.js 的力导向图。
+ * 布局/缩放/平移/邻接高亮全部交给 cytoscape，本组件只做数据转换、主题取色与浮层。
  */
 export default function MemoryGraph({ graph, onSelect, selectedId, height = 560 }: Props) {
-  const containerRef = useRef<HTMLDivElement | null>(null)
-  const [size, setSize] = useState({ w: 960, h: height })
-  const [hover, setHover] = useState<{ id: number; x: number; y: number } | null>(null)
+  const pal = useChartPalette()
+  const hostRef = useRef<HTMLDivElement | null>(null)
+  const cyRef = useRef<Core | null>(null)
+  const layoutRef = useRef<Layouts | null>(null)
+  // 工厂函数本身是函数，放 state 会被 React 当成 updater 调用，所以只放 ref，用 ready 触发渲染。
+  const factoryRef = useRef<CytoscapeFactory | null>(null)
+  const [ready, setReady] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [hover, setHover] = useState<HoverInfo | null>(null)
+  const [focusNs, setFocusNs] = useState<string | null>(null)
 
-  // 仿真状态（不进 React 状态，避免每帧重渲染）
-  const simRef = useRef<Map<number, SimNode>>(new Map())
-  const alphaRef = useRef(1)
-  const rafRef = useRef<number | null>(null)
-  const dragRef = useRef<{ id: number | null; panX: number; panY: number; moved: boolean }>({
-    id: null, panX: 0, panY: 0, moved: false,
-  })
-  const viewRef = useRef({ scale: 1, ox: 0, oy: 0 })
-  const nodeEls = useRef<Map<number, SVGCircleElement>>(new Map())
-  const edgeEls = useRef<Map<number, SVGLineElement>>(new Map())
-  const labelEls = useRef<Map<number, SVGTextElement>>(new Map())
-  const rootGRef = useRef<SVGGElement | null>(null)
+  // 回调/状态进 ref：事件监听只在实例化时绑一次，避免随渲染反复重绑。
+  const onSelectRef = useRef(onSelect)
+  onSelectRef.current = onSelect
+  // 统一收敛成 number | null，省得每处判断 undefined。
+  const selectedIdRef = useRef<number | null>(selectedId ?? null)
+  selectedIdRef.current = selectedId ?? null
+  const focusNsRef = useRef<string | null>(focusNs)
+  focusNsRef.current = focusNs
+  const hoverIdRef = useRef<number | null>(null)
+  hoverIdRef.current = hover?.id ?? null
 
-  const nodeIndex = useMemo(() => {
-    const map = new Map<number, MemoryGraphNode>()
-    graph.nodes.forEach((n) => map.set(n.id, n))
-    return map
-  }, [graph.nodes])
+  const prep = useMemo(() => prepareGraph(graph), [graph])
+  const nsColors = useMemo(() => prep.namespaces.map((n) => n.color), [prep])
 
-  // 容器尺寸自适应（图表填充卡片，不留固定小画布）
   useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const ro = new ResizeObserver((entries) => {
-      const rect = entries[0]?.contentRect
-      if (rect && rect.width > 0) {
-        setSize({ w: Math.round(rect.width), h: rect.height > 0 ? Math.round(rect.height) : height })
-      }
-    })
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [height])
-
-  // 图数据变化：重建仿真节点（保留既有坐标，新节点绕中心铺开）
-  useEffect(() => {
-    const sim = simRef.current
-    const cx = size.w / 2
-    const cy = size.h / 2
-    const radius = Math.min(size.w, size.h) / 3
-    const golden = Math.PI * (3 - Math.sqrt(5))
-    graph.nodes.forEach((n, i) => {
-      const exist = sim.get(n.id)
-      if (exist) return
-      const angle = i * golden
-      sim.set(n.id, {
-        id: n.id,
-        x: cx + radius * Math.cos(angle),
-        y: cy + radius * Math.sin(angle),
-        vx: 0, vy: 0, fixed: false,
+    let alive = true
+    void import('cytoscape')
+      .then((m) => {
+        if (!alive) return
+        factoryRef.current = resolveFactory(m)
+        setReady(true)
       })
-    })
-    // 移除不再显示的节点
-    const alive = new Set(graph.nodes.map((n) => n.id))
-    for (const id of Array.from(sim.keys())) {
-      if (!alive.has(id)) sim.delete(id)
+      .catch((e: unknown) => {
+        if (alive) setLoadError((e as Error)?.message ?? '关系图引擎载入失败')
+      })
+    return () => {
+      alive = false
     }
-    alphaRef.current = 1
-    startLoop()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graph, size.w, size.h])
-
-  const tick = () => {
-    const sim = simRef.current
-    const nodes = Array.from(sim.values())
-    const alpha = alphaRef.current
-    const cx = size.w / 2
-    const cy = size.h / 2
-
-    // 斥力（n 较小，直接两两计算）
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const a = nodes[i]
-        const b = nodes[j]
-        let dx = b.x - a.x
-        let dy = b.y - a.y
-        let dist2 = dx * dx + dy * dy
-        if (dist2 < 1) {
-          dx = (i - j) * 0.7 + 0.5
-          dy = (j - i) * 0.7 + 0.5
-          dist2 = dx * dx + dy * dy
-        }
-        const force = (2600 * alpha) / dist2
-        const dist = Math.sqrt(dist2)
-        const fx = (dx / dist) * force
-        const fy = (dy / dist) * force
-        a.vx -= fx
-        a.vy -= fy
-        b.vx += fx
-        b.vy += fy
-      }
-    }
-    // 弹簧（边）
-    for (const e of graph.edges) {
-      const a = sim.get(e.from_id)
-      const b = sim.get(e.to_id)
-      if (!a || !b) continue
-      const dx = b.x - a.x
-      const dy = b.y - a.y
-      const dist = Math.sqrt(dx * dx + dy * dy) || 1
-      const target = 96
-      const force = (dist - target) * 0.022 * alpha
-      const fx = (dx / dist) * force
-      const fy = (dy / dist) * force
-      a.vx += fx
-      a.vy += fy
-      b.vx -= fx
-      b.vy -= fy
-    }
-    // 向心 + 阻尼 + 位置积分
-    for (const n of nodes) {
-      if (n.fixed) {
-        n.vx = 0
-        n.vy = 0
-        continue
-      }
-      n.vx += (cx - n.x) * 0.008 * alpha
-      n.vy += (cy - n.y) * 0.008 * alpha
-      n.vx *= 0.82
-      n.vy *= 0.82
-      n.x += n.vx
-      n.y += n.vy
-    }
-    alphaRef.current = alpha * 0.97
-  }
-
-  const applyPositions = () => {
-    const { scale, ox, oy } = viewRef.current
-    if (rootGRef.current) {
-      rootGRef.current.setAttribute('transform', `translate(${ox} ${oy}) scale(${scale})`)
-    }
-    for (const [id, el] of nodeEls.current) {
-      const n = simRef.current.get(id)
-      if (!n) continue
-      el.setAttribute('cx', String(n.x))
-      el.setAttribute('cy', String(n.y))
-    }
-    for (const [id, el] of labelEls.current) {
-      const n = simRef.current.get(id)
-      if (!n) continue
-      el.setAttribute('x', String(n.x))
-      el.setAttribute('y', String(n.y + 15))
-    }
-    for (const [id, el] of edgeEls.current) {
-      const a = simRef.current.get(id)
-      if (!a) continue
-      const e = edgeById.get(id)
-      if (!e) continue
-      const b = simRef.current.get(e.to_id)
-      if (!b) continue
-      el.setAttribute('x1', String(a.x))
-      el.setAttribute('y1', String(a.y))
-      el.setAttribute('x2', String(b.x))
-      el.setAttribute('y2', String(b.y))
-    }
-  }
-
-  const edgeById = useMemo(() => {
-    const map = new Map<number, MemoryGraphEdge>()
-    // 边元素以 from_id 为键不可靠（同一节点多条边），用「边 id」存；见 render 处。
-    graph.edges.forEach((e) => map.set(e.id, e))
-    return map
-  }, [graph.edges])
-
-  const startLoop = () => {
-    if (rafRef.current != null) return
-    const step = () => {
-      rafRef.current = null
-      const dragging = dragRef.current.id != null
-      if (alphaRef.current > 0.006 || dragging) {
-        tick()
-        applyPositions()
-        rafRef.current = requestAnimationFrame(step)
-      } else {
-        applyPositions()
-      }
-    }
-    rafRef.current = requestAnimationFrame(step)
-  }
-
-  useEffect(() => () => {
-    if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
   }, [])
 
-  // ---- 指针交互 ----
+  /**
+   * 高亮策略：悬停聚焦邻接、选中保持可见、图例按命名空间筛除，其余淡出。
+   * hoveredId 由调用方显式传入：事件回调里 setHover 是异步的，此刻 hoverIdRef 还是旧值，
+   * 读 ref 会让「移出节点后整张图卡在淡出态」。
+   */
+  const applyHighlight = useCallback((hoveredId: number | null) => {
+    const cy = cyRef.current
+    if (!cy) return
+    const sel = selectedIdRef.current
+    const focus = focusNsRef.current
+    // 没有任何激活项时 keep 为空，此时若还按「不在 keep 里就淡出」算，会把整张图都淡掉，
+    // 所以要用 active 短路——但不能提前 return，否则上一次留下的 faded 清不掉。
+    const active = hoveredId != null || sel != null || focus != null
 
-  const toWorld = (clientX: number, clientY: number) => {
-    const rect = containerRef.current?.getBoundingClientRect()
-    const { scale, ox, oy } = viewRef.current
-    const x = ((clientX - (rect?.left ?? 0)) - ox) / scale
-    const y = ((clientY - (rect?.top ?? 0)) - oy) / scale
-    return { x, y }
-  }
-
-  const onNodePointerDown = (id: number, e: ReactPointerEvent) => {
-    e.stopPropagation()
-    const w = toWorld(e.clientX, e.clientY)
-    const n = simRef.current.get(id)
-    if (n) {
-      n.fixed = true
-      n.x = w.x
-      n.y = w.y
+    const keep = new Set<string>()
+    const spread = (id: number | null) => {
+      if (id == null) return
+      const n = cy.getElementById(`n${id}`)
+      if (n.empty()) return
+      keep.add(n.id())
+      n.connectedEdges().forEach((e) => {
+        keep.add(e.id())
+        keep.add(e.source().id())
+        keep.add(e.target().id())
+      })
     }
-    dragRef.current = { id, panX: e.clientX, panY: e.clientY, moved: false }
-    alphaRef.current = Math.max(alphaRef.current, 0.35)
-    startLoop()
-  }
-
-  const onSvgPointerDown = (e: ReactPointerEvent) => {
-    dragRef.current = { id: null, panX: e.clientX, panY: e.clientY, moved: false }
-  }
-
-  const onPointerMove = (e: ReactPointerEvent) => {
-    const drag = dragRef.current
-    if (drag.id != null) {
-      const w = toWorld(e.clientX, e.clientY)
-      const n = simRef.current.get(drag.id)
-      if (n) {
-        n.x = w.x
-        n.y = w.y
-      }
-      drag.moved = true
-      startLoop()
-      return
+    spread(hoveredId)
+    spread(sel)
+    if (focus != null) {
+      cy.nodes().forEach((n) => {
+        if (n.data('ns') === focus) keep.add(n.id())
+      })
+      cy.edges().forEach((e) => {
+        if (keep.has(e.source().id()) && keep.has(e.target().id())) keep.add(e.id())
+      })
     }
-    if (e.buttons === 1) {
-      const dx = e.clientX - drag.panX
-      const dy = e.clientY - drag.panY
-      if (Math.abs(dx) + Math.abs(dy) > 2) {
-        drag.moved = true
-        viewRef.current.ox += dx
-        viewRef.current.oy += dy
-        drag.panX = e.clientX
-        drag.panY = e.clientY
-        applyPositions()
-      }
+
+    cy.batch(() => {
+      cy.elements().forEach((el) => {
+        el.toggleClass('faded', active && !keep.has(el.id()))
+        if (el.isEdge()) el.toggleClass('highlighted', active && keep.has(el.id()))
+      })
+    })
+  }, [])
+
+  /** 远景（缩放较小）时只给重要节点留标签。 */
+  const applyZoomLabels = useCallback(() => {
+    const cy = cyRef.current
+    if (!cy || cy.nodes().empty()) return
+    const far = cy.zoom() < LABEL_FAR_ZOOM
+    const weights = cy.nodes().map((n) => n.data('weight') as number).sort((a, b) => b - a)
+    // 远景保留权重最高的 30%
+    const cut = weights[Math.floor(weights.length * 0.3)] ?? 0
+    cy.batch(() => {
+      cy.nodes().forEach((n) => {
+        n.toggleClass('label-off', far && (n.data('weight') as number) < cut)
+      })
+    })
+  }, [])
+
+  // ---- 实例化（只做一次；数据/主题/图例变化走下面的增量 effect）----
+  useEffect(() => {
+    const host = hostRef.current
+    const factory = factoryRef.current
+    if (!ready || !host || !factory) return
+
+    const cy = factory({
+      container: host,
+      style: buildStyle(pal, nsColors),
+      layout: { name: 'preset' },
+      minZoom: 0.15,
+      maxZoom: 3,
+      boxSelectionEnabled: false,
+      // 清晰度相关：四项都显式设置，否则 HiDPI 屏上整张图发虚。
+      // 注意 pixelRatio 的默认值是 1（不是 'auto'），等于按 CSS 像素渲染再交给浏览器
+      // 放大 2 倍 —— 圆和文字必糊。必须显式给 'auto' 才跟随 devicePixelRatio。
+      pixelRatio: 'auto',
+      // textureOnViewport / hideEdgesOnViewport 会把视口外的元素缓存成贴图，平移时
+      // 用低清贴图顶替原生分辨率；节点量级不大，全量重绘换清晰度更划算。
+      textureOnViewport: false,
+      hideEdgesOnViewport: false,
+      // 平移/缩放动画的残影同样糊边
+      motionBlur: false,
+    })
+    cyRef.current = cy
+
+    cy.on('tap', 'node', (evt: EventObject) => {
+      const id = (evt.target as NodeSingular).data('key') as number
+      onSelectRef.current?.(id)
+    })
+    cy.on('mouseover', 'node', (evt: EventObject) => {
+      const n = evt.target as NodeSingular
+      if (!n || n.empty()) return
+      const key = n.data('key') as number
+      n.addClass('hovered')
+      const neighbors = n.connectedEdges().map<Neighbor>((e) => {
+        const other = e.source().id() === n.id() ? e.target() : e.source()
+        return { id: other.data('key') as number, title: other.data('title') as string, rel: e.data('rel') as MemoryLinkRelation }
+      })
+      neighbors.sort((a, b) => a.rel.localeCompare(b.rel))
+      // 事件里理论上总带 renderedPosition，但解引用失败会炸掉整页，这里兜底成节点自身位置
+      const rp = evt.renderedPosition ?? n.renderedPosition()
+      setHover({
+        id: key,
+        x: rp.x,
+        y: rp.y,
+        title: n.data('title') as string,
+        ns: n.data('ns') as string,
+        kind: n.data('kind') as MemoryKind,
+        importance: n.data('importance') as number,
+        degree: n.data('degree') as number,
+        pinned: n.data('pinned') as boolean,
+        orphan: Boolean(n.data('orphan')),
+        neighbors,
+      })
+      applyHighlight(key)
+    })
+    cy.on('mouseout', 'node', (evt: EventObject) => {
+      const n = evt.target as NodeSingular
+      if (!n || n.empty()) return
+      n.removeClass('hovered')
+      setHover(null)
+      // 必须显式传 null：此刻 hoverIdRef 还没被新渲染刷新
+      applyHighlight(null)
+    })
+    cy.on('zoom', applyZoomLabels)
+
+    return () => {
+      layoutRef.current?.stop()
+      layoutRef.current = null
+      cyRef.current = null
+      cy.destroy()
     }
-  }
+    // 实例只建一次；数据/主题/图例变化分别由下面的 effect 增量更新。
+  }, [ready])
 
-  const onPointerUp = (id?: number) => {
-    const drag = dragRef.current
-    if (drag.id != null) {
-      const n = simRef.current.get(drag.id)
-      if (n) n.fixed = false
-      if (!drag.moved && id != null) onSelect?.(id)
+  // 主题切换：cytoscape 样式只能整体替换
+  useEffect(() => {
+    cyRef.current?.style(buildStyle(pal, nsColors))
+  }, [pal, nsColors, ready])
+
+  // ---- 数据更新：diff 节点（保留旧坐标）→ 重建边 → 节点集合变了才重排 ----
+  const nodeSetRef = useRef('')
+  useEffect(() => {
+    const cy = cyRef.current
+    if (!cy || !ready) return
+    layoutRef.current?.stop()
+
+    const prevPos = new Map<string, { x: number; y: number }>()
+    cy.nodes().forEach((n) => {
+      prevPos.set(n.id(), { ...n.position() })
+    })
+
+    const nodeEls = prep.elements.filter((e) => e.group === 'nodes')
+    const edgeEls = prep.elements.filter((e) => e.group === 'edges')
+    const nextIds = new Set(nodeEls.map((e) => String(e.data?.id)))
+    const signature = Array.from(nextIds).sort().join(',')
+    const changed = signature !== nodeSetRef.current
+
+    cy.batch(() => {
+      cy.nodes().forEach((n) => {
+        if (!nextIds.has(n.id())) n.remove()
+      })
+      nodeEls.forEach((el) => {
+        const id = String(el.data?.id)
+        const exist = cy.getElementById(id)
+        const pos = prevPos.get(id)
+        if (exist.nonempty()) {
+          exist.data(el.data ?? {})
+          if (pos) exist.position(pos)
+        } else {
+          cy.add(pos ? { ...el, position: pos } : el)
+        }
+      })
+      // 边整体重建：cytoscape 不支持就地改端点，重建远便宜于绕开这个限制。
+      cy.edges().remove()
+      cy.add(edgeEls)
+    })
+    nodeSetRef.current = signature
+
+    if (changed) {
+      const layout = cy.layout({ ...LAYOUT_OPTIONS, randomize: prevPos.size === 0 })
+      layout.one('layoutstop', () => {
+        layoutRef.current = null
+        placeOrphans(cy)
+        cy.fit(undefined, 40)
+        applyZoomLabels()
+      })
+      layoutRef.current = layout
+      layout.run()
+    } else {
+      cy.fit(undefined, 40)
+      applyZoomLabels()
     }
-    dragRef.current = { id: null, panX: 0, panY: 0, moved: false }
+    applyHighlight(hoverIdRef.current)
+  }, [prep, ready, applyHighlight, applyZoomLabels])
+
+  // 选中态同步（外部抽屉打开/关闭时）
+  useEffect(() => {
+    const cy = cyRef.current
+    if (!cy || !ready) return
+    cy.batch(() => {
+      cy.nodes('.selected').removeClass('selected')
+      if (selectedId != null) cy.getElementById(`n${selectedId}`).addClass('selected')
+    })
+    applyHighlight(hoverIdRef.current)
+  }, [selectedId, ready, applyHighlight])
+
+  // 切图例命名空间时先清 hover：悬浮卡指向的节点可能已被淡出。
+  useEffect(() => {
+    setHover(null)
+    applyHighlight(null)
+  }, [focusNs, applyHighlight])
+
+  // 容器尺寸变化（侧栏折叠/窗口缩放）→ 重排画布
+  useEffect(() => {
+    const host = hostRef.current
+    const cy = cyRef.current
+    if (!host || !cy || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      cy.resize()
+      cy.fit(undefined, 40)
+    })
+    ro.observe(host)
+    return () => ro.disconnect()
+  }, [ready])
+
+  const zoomBy = (k: number) => {
+    const cy = cyRef.current
+    if (!cy) return
+    const z = Math.min(cy.maxZoom(), Math.max(cy.minZoom(), cy.zoom() * k))
+    cy.animate({ zoom: { level: z, position: { x: cy.width() / 2, y: cy.height() / 2 } }, duration: 160 })
+  }
+  const fit = () => {
+    const cy = cyRef.current
+    if (!cy) return
+    cy.animate({ fit: { eles: cy.elements(), padding: 40 }, duration: 240 })
+  }
+  const relayout = () => {
+    const cy = cyRef.current
+    if (!cy) return
+    layoutRef.current?.stop()
+    const layout = cy.layout({ ...LAYOUT_OPTIONS, randomize: true })
+    layout.one('layoutstop', () => {
+      layoutRef.current = null
+      placeOrphans(cy)
+      fit()
+    })
+    layoutRef.current = layout
+    layout.run()
   }
 
-  const onWheel = (e: ReactWheelEvent) => {
-    const rect = containerRef.current?.getBoundingClientRect()
-    const mx = e.clientX - (rect?.left ?? 0)
-    const my = e.clientY - (rect?.top ?? 0)
-    const view = viewRef.current
-    const next = Math.min(3, Math.max(0.4, view.scale * (e.deltaY > 0 ? 0.9 : 1.1)))
-    // 以光标为锚点缩放
-    view.ox = mx - ((mx - view.ox) / view.scale) * next
-    view.oy = my - ((my - view.oy) / view.scale) * next
-    view.scale = next
-    applyPositions()
-  }
-
-  // 图例（按出现的命名空间）
-  const legend = useMemo(() => {
-    const seen = new Map<string, number>()
-    graph.nodes.forEach((n) => seen.set(n.namespace, (seen.get(n.namespace) ?? 0) + 1))
-    return Array.from(seen.entries()).sort((a, b) => b[1] - a[1])
-  }, [graph.nodes])
+  const a11yLabel = `记忆关系图：${graph.nodes.length} 条记忆、${graph.edges.length} 条关系。`
+    + '可拖拽节点、滚轮缩放、点击查看详情；同样的数据可在「列表」视图逐条浏览。'
 
   return (
-    <div ref={containerRef} style={{ position: 'relative', width: '100%', height }}>
-      <svg
-        width={size.w}
-        height={size.h}
-        style={{ display: 'block', cursor: 'grab', touchAction: 'none' }}
-        onPointerDown={onSvgPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={() => onPointerUp()}
-        onPointerLeave={() => onPointerUp()}
-        onWheel={onWheel}
-      >
-        <g ref={rootGRef}>
-          {graph.edges.map((e) => {
-            const style = RELATION_STYLE[e.relation] ?? RELATION_STYLE.related
-            return (
-              <line
-                key={e.id}
-                ref={(el) => {
-                  if (el) edgeEls.current.set(e.id, el)
-                  else edgeEls.current.delete(e.id)
-                }}
-                stroke={style.color}
-                strokeDasharray={style.dash}
-                strokeWidth={1.6}
-                opacity={0.55}
-              />
-            )
-          })}
-          {graph.nodes.map((n) => {
-            const r = 7 + n.importance * 1.6 + Math.min(n.degree, 5) * 1.4
-            const selected = selectedId === n.id
-            return (
-              <g key={n.id}>
-                <circle
-                  ref={(el) => {
-                    if (el) nodeEls.current.set(n.id, el)
-                    else nodeEls.current.delete(n.id)
-                  }}
-                  r={r}
-                  fill={namespaceColor(n.namespace)}
-                  stroke={selected ? 'var(--accent)' : n.pinned ? '#e8c33d' : 'transparent'}
-                  strokeWidth={selected ? 3 : n.pinned ? 2 : 1}
-                  style={{ cursor: 'pointer' }}
-                  onPointerDown={(e) => onNodePointerDown(n.id, e)}
-                  onPointerUp={() => onPointerUp(n.id)}
-                  onPointerEnter={() => setHover({ id: n.id, x: 0, y: 0 })}
-                  onPointerLeave={() => setHover(null)}
-                />
-                {(r >= 11 || selected || hover?.id === n.id) && (
-                  <text
-                    ref={(el) => {
-                      if (el) labelEls.current.set(n.id, el)
-                      else labelEls.current.delete(n.id)
-                    }}
-                    textAnchor="middle"
-                    fontSize={11}
-                    fill="var(--text-secondary)"
-                    style={{ pointerEvents: 'none', userSelect: 'none' }}
-                  >
-                    {n.title.length > 12 ? `${n.title.slice(0, 12)}…` : n.title}
-                  </text>
-                )}
-              </g>
-            )
-          })}
-        </g>
-      </svg>
+    <div
+      style={{ position: 'relative', width: '100%', height, overflow: 'hidden' }}
+      role="img"
+      aria-label={a11yLabel}
+    >
+      <div ref={hostRef} className="mg-host" style={{ position: 'absolute', inset: 0, cursor: 'grab' }} />
 
-      {hover && nodeIndex.get(hover.id) && (
+      {loadError && (
+        <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', fontSize: 13, color: 'var(--coral)' }}>
+          {loadError}
+        </div>
+      )}
+
+      {/* 图例：点击只看某个命名空间 */}
+      {prep.namespaces.length > 0 && (
         <div
           style={{
-            position: 'absolute', left: 12, top: 12, pointerEvents: 'none',
-            background: 'var(--bg-elevated, rgba(20,28,39,0.92))', borderRadius: 8,
-            padding: '8px 12px', fontSize: 12, maxWidth: 280,
-            border: '1px solid rgba(128,148,168,0.25)',
+            position: 'absolute', left: 12, top: 12, display: 'flex', gap: 8, flexWrap: 'wrap',
+            maxWidth: '58%', pointerEvents: 'auto',
           }}
         >
-          <div style={{ fontWeight: 600 }}>{nodeIndex.get(hover.id)!.title}</div>
-          <div style={{ opacity: 0.75, marginTop: 2 }}>
-            {nodeIndex.get(hover.id)!.namespace || '未分类'} · 关联 {nodeIndex.get(hover.id)!.degree} 条
-          </div>
+          {prep.namespaces.map((s) => {
+            const active = focusNs === s.name
+            return (
+              <button
+                key={s.name || '未分类'}
+                type="button"
+                onClick={() => setFocusNs(active ? null : s.name)}
+                aria-pressed={active}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 5, padding: '2px 8px',
+                  borderRadius: 999, font: 'inherit', fontSize: 12, cursor: 'pointer',
+                  color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+                  background: active ? 'var(--accent-dim)' : 'transparent',
+                  border: `1px solid ${active ? 'var(--accent)' : 'var(--border-faint)'}`,
+                }}
+              >
+                <span style={{ width: 9, height: 9, borderRadius: '50%', background: s.color, flex: 'none' }} />
+                {s.name || '未分类'}({s.count})
+              </button>
+            )
+          })}
         </div>
       )}
 
-      {legend.length > 0 && (
-        <div style={{ position: 'absolute', right: 12, top: 12, display: 'flex', gap: 10, flexWrap: 'wrap', maxWidth: '60%' }}>
-          {legend.map(([ns, count]) => (
-            <span key={ns || '未分类'} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, opacity: 0.85 }}>
-              <span style={{ width: 9, height: 9, borderRadius: '50%', background: namespaceColor(ns) }} />
-              {ns || '未分类'}({count})
-            </span>
-          ))}
-        </div>
+      {/* 悬浮卡：锚在节点位置；邻居可点击跳转 */}
+      {hover && (
+        <Tooltip
+          open
+          placement="top"
+          mouseEnterDelay={0}
+          styles={{ root: { pointerEvents: 'auto' } }}
+          title={
+            <div style={{ maxWidth: 280, fontSize: 12 }}>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>{hover.title}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: namespaceColor(hover.ns) }} />
+                  {hover.ns || '未分类'}
+                </span>
+                <span>{kindLabel(hover.kind)}</span>
+                <span>重要度 {hover.importance}</span>
+                {hover.pinned && <span style={{ color: 'var(--amber)' }}>置顶</span>}
+                <span>{hover.orphan ? '暂无关联' : `${hover.degree} 条关系`}</span>
+              </div>
+              {hover.neighbors.length > 0 && (
+                <div style={{ borderTop: '1px solid var(--border-faint)', paddingTop: 4, marginTop: 4, maxHeight: 180, overflowY: 'auto' }}>
+                  {hover.neighbors.map((nb) => (
+                    <button
+                      key={`${nb.rel}-${nb.id}`}
+                      type="button"
+                      onClick={() => onSelectRef.current?.(nb.id)}
+                      style={{
+                        display: 'block', width: '100%', textAlign: 'left', background: 'none',
+                        border: 0, padding: '2px 0', color: 'inherit', font: 'inherit', cursor: 'pointer',
+                      }}
+                    >
+                      <span style={{ opacity: 0.65, marginRight: 6 }}>[{relationStyle(nb.rel).label}]</span>
+                      {nb.title}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          }
+        >
+          <span
+            style={{
+              position: 'absolute', left: hover.x, top: hover.y, width: 0, height: 0, pointerEvents: 'none',
+            }}
+          />
+        </Tooltip>
       )}
+
+      {/* 视图控制 */}
+      <div style={{ position: 'absolute', right: 12, bottom: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <Button size="small" icon={<PlusOutlined />} onClick={() => zoomBy(1.25)} aria-label="放大" />
+        <Button size="small" icon={<MinusOutlined />} onClick={() => zoomBy(0.8)} aria-label="缩小" />
+        <Button size="small" icon={<CompressOutlined />} onClick={fit} aria-label="适应画布" />
+        <Button size="small" icon={<ReloadOutlined />} onClick={relayout} aria-label="重新布局" />
+      </div>
+
+      {/* 关系图例 + 统计 */}
+      <div
+        className="mg-rel-legend"
+        style={{
+          position: 'absolute', left: 12, bottom: 10, fontSize: 11, color: 'var(--text-secondary)',
+          display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', maxWidth: '70%',
+        }}
+      >
+        {prep.relCounts.map(({ rel, count }) => {
+          const r = relationStyle(rel)
+          return (
+            <span key={rel} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <svg width="26" height="8" aria-hidden="true">
+                <line
+                  x1="1" y1="4" x2="25" y2="4"
+                  stroke={r.color(pal)} strokeWidth="1.6"
+                  strokeDasharray={r.dash ? '4 3' : undefined}
+                />
+                {r.directed && <path d="M25 1 L20 4 L25 7 Z" fill={r.color(pal)} />}
+              </svg>
+              {r.label}({count})
+            </span>
+          )
+        })}
+        <span style={{ color: 'var(--text-faint)' }}>
+          {graph.nodes.length} 节点 / {graph.edges.length} 关系
+          {prep.orphanCount > 0 && ` · ${prep.orphanCount} 条无关联已单列`}
+        </span>
+      </div>
 
       {graph.truncated && (
-        <div style={{ position: 'absolute', left: 12, bottom: 10, fontSize: 12, opacity: 0.7 }}>
+        <div style={{ position: 'absolute', right: 12, top: 12, fontSize: 12, color: 'var(--text-faint)' }}>
           节点过多已裁剪，可按命名空间过滤查看
         </div>
       )}

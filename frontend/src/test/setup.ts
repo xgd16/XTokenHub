@@ -1,4 +1,6 @@
-// Vitest 全局 setup：jsdom 未实现 matchMedia，Framer Motion 的 useReducedMotion 需要它。
+// Vitest 全局 setup：补齐 jsdom 缺失的浏览器 API（canvas 2D 上下文、matchMedia）。
+import { installCanvasStub } from './canvasStub'
+
 if (typeof window !== 'undefined' && typeof window.matchMedia !== 'function') {
   window.matchMedia = ((query: string) => ({
     matches: false,
@@ -11,3 +13,6 @@ if (typeof window !== 'undefined' && typeof window.matchMedia !== 'function') {
     dispatchEvent: () => false,
   })) as unknown as typeof window.matchMedia
 }
+
+// cytoscape 渲染器启动即 getContext('2d')，jsdom 返回 null 会直接抛错。
+installCanvasStub()

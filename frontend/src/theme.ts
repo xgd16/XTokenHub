@@ -97,6 +97,10 @@ if (typeof matchMedia !== 'undefined') {
 export interface ChartPalette {
   accent: string
   coral: string
+  /** 提醒/高亮用琥珀色（置顶项、替代关系）。 */
+  amber: string
+  /** 派生关系用紫。 */
+  violet: string
   textSecondary: string
   textFaint: string
   grid: string
@@ -118,6 +122,8 @@ export interface ChartPalette {
 const DARK_PALETTE: ChartPalette = {
   accent: '#2fe0a4',
   coral: '#ef6b6b',
+  amber: '#ffc46b',
+  violet: '#9c7be8',
   textSecondary: '#8b98a9',
   textFaint: '#5a6675',
   grid: 'rgba(94, 128, 148, 0.16)',
@@ -135,6 +141,8 @@ const DARK_PALETTE: ChartPalette = {
 const LIGHT_PALETTE: ChartPalette = {
   accent: '#0c9d74',
   coral: '#d9504f',
+  amber: '#b0720d',
+  violet: '#7048c4',
   textSecondary: '#5a6a7a',
   textFaint: '#8b98a6',
   grid: 'rgba(45, 74, 96, 0.14)',
