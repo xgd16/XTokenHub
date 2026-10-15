@@ -13,6 +13,7 @@ import {
   memoryApi, type ClassifyConfig, type ClassifyStatus, type MemoryNamespaceView, type MemoryStats,
 } from '../api/memory'
 import { AnimatedNumber } from '../components/AnimatedNumber'
+import McpQuickConnect from '../components/McpQuickConnect'
 import { PageHero } from '../components/PageHero'
 import { obsColorStyle } from '../utils/format'
 import { NS_ALL, NS_NONE, namespaceColor, nsPath } from '../utils/memoryMeta'
@@ -181,7 +182,9 @@ export default function Memories() {
         backdrop={<ConstellationBackdrop />}
         readouts={[
           { label: '记忆总量', value: stats ? <AnimatedNumber value={stats.total} format={intText} /> : '—', tone: 'accent' },
-          { label: '生效', value: stats ? stats.active : '—' },
+          // 「已替代」取代原先的「生效」：记忆总量已只算生效，两数同值没有信息量。
+          // 把被替代的条数显式摆出来，切换到「全部状态」时多出来的那几条才有出处。
+          { label: '已替代', value: stats ? stats.superseded : '—' },
           { label: '未分类', value: stats ? stats.uncategorized : '—', tone: uncategorized > 0 ? 'warn' : undefined },
           { label: '关系边', value: stats ? stats.links : '—' },
         ]}
@@ -368,6 +371,9 @@ export default function Memories() {
           </div>
         )}
       </section>
+
+      {/* —— 快速接入：复制命令把记忆库挂到 agent —— */}
+      <McpQuickConnect />
 
       <Modal
         title="新建命名空间"

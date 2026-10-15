@@ -327,6 +327,10 @@ type MemoryFilter struct {
 	Tags []string
 	// Status 状态精确匹配（空 = 不限；服务层按场景补 active）。
 	Status string
+	// ExcludeDeleted 排除软删除（回收站）记录。
+	// 与 Status 精确匹配正交：Status="" 且本项为 true = 「生效 + 被替代 + 归档」，
+	// 即「全部状态」筛选——回收站只能由 Status=deleted 显式查看，不混进日常浏览。
+	ExcludeDeleted bool
 	// PinnedOnly 只看置顶。
 	PinnedOnly bool
 	// ExcludeExpired 排除已过期记忆（需 Now 非零）。
@@ -344,11 +348,18 @@ type MemoryHit struct {
 
 // MemoryStats 记忆库总览（控制台统计与命名空间图例用）。
 type MemoryStats struct {
-	Total         int64            `json:"total"`
-	Active        int64            `json:"active"`
-	Uncategorized int64            `json:"uncategorized"`
-	Superseded    int64            `json:"superseded"`
-	Archived      int64            `json:"archived"`
+	// Total 生效记忆总数。口径 = Active，必须满足
+	// Total == Uncategorized + Σ ByNamespace == 默认列表条数。
+	Total int64 `json:"total"`
+	// Active 生效记忆数（与 Total 同值，保留独立字段供客户端按需引用）。
+	Active int64 `json:"active"`
+	// Uncategorized 未分类的生效记忆数。
+	Uncategorized int64 `json:"uncategorized"`
+	// Superseded 被替代的记忆数（不在 Total 内）。
+	Superseded int64 `json:"superseded"`
+	// Archived 归档的记忆数（不在 Total 内）。
+	Archived int64 `json:"archived"`
+	// Deleted 软删除的记忆数（回收站，不在 Total 内）。
 	Deleted       int64            `json:"deleted"`
 	Links         int64            `json:"links"`
 	ByKind        map[string]int64 `json:"by_kind"`

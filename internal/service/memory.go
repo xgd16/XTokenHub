@@ -104,7 +104,8 @@ type MemoryQuery struct {
 	Kind string
 	// Tags 标签过滤（全部命中）。
 	Tags []string
-	// Status 状态过滤：空 = active；"all" = 不限；否则按枚举精确匹配。
+	// Status 状态过滤：空 = active；"all" = 生效 + 被替代 + 归档（不含已删除）；
+	// 否则按枚举精确匹配。
 	Status string
 	// PinnedOnly 只看置顶。
 	PinnedOnly bool
@@ -857,6 +858,11 @@ func (s *MemoryService) filterOf(q MemoryQuery) (repository.MemoryFilter, error)
 		f.ExcludeExpired = true
 		f.Now = s.now()
 	case "all":
+		// 「全部状态」= 生效 + 被替代 + 归档，**不含已删除**。
+		// 曾经留空 Status 等于完全不过滤，软删除的回收站记录被一并带出，
+		// 结果是「全部状态」比 Stats.Total 还多（16 vs 15），且与 UI 里单独的
+		// 「已删除」筛选项语义重叠。回收站只由 status=deleted 查看。
+		f.ExcludeDeleted = true
 	default:
 		st := model.MemoryStatus(strings.TrimSpace(q.Status))
 		if !st.Valid() {

@@ -112,11 +112,15 @@ export interface MemoryNamespaceView {
 }
 
 export interface MemoryStats {
+  /** 生效记忆总数；口径 = active，必须等于 uncategorized + Σ by_namespace。 */
   total: number
   active: number
   uncategorized: number
+  /** 被替代数（不在 total 内）。 */
   superseded: number
+  /** 归档数（不在 total 内）。 */
   archived: number
+  /** 软删除数（回收站，不在 total 内，也不被「全部状态」筛出）。 */
   deleted: number
   links: number
   by_kind: Record<string, number>

@@ -268,8 +268,11 @@ func TestMemoryGraphNodesAndStats(t *testing.T) {
 	}
 }
 
-// TestMemoryStatsExcludesDeleted 统计口径：软删除的记忆只进 Deleted，不计入 Total。
-// 否则「全部记忆」会数出用户根本看不到的回收站记录（库里看着是空的，卡片却显示有 N 条）。
+// TestMemoryStatsExcludesDeleted 统计口径：Total 只算生效记忆。
+//
+// Total 必须与「未分类 + Σ 命名空间」以及默认列表（status 空 = active）严格相等。
+// 它曾经把 archived/superseded 也计入，导致首页「记忆总量」比命名空间卡片之和多 1~2，
+// 「全部记忆」卡片写着 N、点进去列表只有 N-1 条。
 func TestMemoryStatsExcludesDeleted(t *testing.T) {
 	db := NewTestDB(t)
 	repo, _, _, _ := memoryRepos(t, db)
@@ -278,28 +281,41 @@ func TestMemoryStatsExcludesDeleted(t *testing.T) {
 	seedMemory(t, repo, "一", "内容一", "", model.MemoryKindNote)
 	gone := seedMemory(t, repo, "二", "内容二", "", model.MemoryKindNote)
 	arch := seedMemory(t, repo, "三", "内容三", "", model.MemoryKindNote)
+	sup := seedMemory(t, repo, "四", "内容四", "", model.MemoryKindNote)
 	gone.Status = model.MemoryStatusDeleted
 	arch.Status = model.MemoryStatusArchived
-	if err := repo.Update(ctx, gone); err != nil {
-		t.Fatal(err)
-	}
-	if err := repo.Update(ctx, arch); err != nil {
-		t.Fatal(err)
+	sup.Status = model.MemoryStatusSuperseded
+	for _, m := range []*model.Memory{gone, arch, sup} {
+		if err := repo.Update(ctx, m); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	st, err := repo.Stats(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Active != 1 || st.Deleted != 1 || st.Archived != 1 {
+	if st.Active != 1 || st.Deleted != 1 || st.Archived != 1 || st.Superseded != 1 {
 		t.Fatalf("分状态计数异常: %+v", st)
 	}
-	if st.Total != 2 { // 生效 + 归档，软删除不计入
-		t.Fatalf("Total 应排除软删除，实际 %d（%+v）", st.Total, st)
+	// 总量 = 生效（1）；归档/被替代/软删除都另有计数，不混进总量
+	if st.Total != 1 {
+		t.Fatalf("Total 应只算生效，实际 %d（%+v）", st.Total, st)
+	}
+	if st.Total != st.Active {
+		t.Fatalf("Total(%d) 必须等于 Active(%d)", st.Total, st.Active)
 	}
 	counts, err := repo.NamespaceCounts(ctx)
 	if err != nil || counts[""] != 1 {
 		t.Fatalf("命名空间计数应只算 active: err=%v %+v", err, counts)
+	}
+	// 不变量：Total == 未分类 + Σ 命名空间
+	sum := st.Uncategorized
+	for _, n := range st.ByNamespace {
+		sum += n
+	}
+	if st.Total != sum {
+		t.Fatalf("Total(%d) 应等于 未分类+Σ命名空间(%d)（%+v）", st.Total, sum, st)
 	}
 }
 

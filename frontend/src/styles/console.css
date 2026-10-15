@@ -788,6 +788,118 @@
   color: var(--text-secondary);
 }
 
+/* —— 快速接入（MCP 命令） —— */
+.obs-connect-intro {
+  font-size: 12.5px;
+  line-height: 1.9;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+
+.obs-connect-keypick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.obs-connect-keypick-label {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.obs-connect-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 12px;
+}
+
+.obs-connect-item {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  border: 1px solid var(--border-faint);
+  border-radius: 10px;
+  padding: 11px 12px;
+  background: var(--card-tint);
+}
+
+.obs-connect-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 说明文字可压缩，标题与复制按钮不可压缩 */
+.obs-connect-item-note {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.obs-connect-copy {
+  flex: none;
+  margin-right: -6px;
+}
+
+/* 命令块：整块可点复制。命令含 API Key，手动拖选长串很痛苦，
+   所以给它可点击样式与 title 提示，而不是只留右上角的小图标。 */
+.obs-connect-cmd {
+  display: block;
+  padding: 9px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-faint);
+  background: var(--track-bg);
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+  /* 命令很长：按语义换行，不能横向滚动（窄屏会把整页撑宽） */
+  white-space: pre-wrap;
+  word-break: break-all;
+  cursor: copy;
+  transition: border-color 0.16s ease, color 0.16s ease;
+}
+
+.obs-connect-cmd:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.obs-connect-cmd:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.obs-connect-foot {
+  margin-top: 12px;
+  font-size: 11.5px;
+  line-height: 1.9;
+  color: var(--text-faint);
+}
+
+.obs-connect-empty {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 14px 12px;
+  border: 1px dashed var(--border-faint);
+  border-radius: 10px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.obs-connect-skeleton {
+  height: 92px;
+  border-radius: 10px;
+  background: var(--track-bg);
+}
+
 /* —— Markdown 正文渲染（记忆库） —— */
 .md-body {
   font-size: 13.5px;

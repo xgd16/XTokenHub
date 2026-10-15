@@ -250,6 +250,77 @@ func TestMemorySupersedeAndForget(t *testing.T) {
 	if search.Count != 0 {
 		t.Fatalf("软删除后检索应为空, got %d", search.Count)
 	}
+	// 「全部状态」= 生效 + 被替代 + 归档，**不含已删除**：回收站只由 status=deleted 查看。
+	// 曾经 status=all 等于完全不过滤，把软删除记录一并带出（比 Stats.Total 还多）。
+	search, _ = svc.Search(ctx, service.MemoryQuery{Q: "回调超时时间", Status: "all", Limit: 10})
+	if search.Count != 1 || search.Items[0].ID != oldMem.ID {
+		t.Fatalf("status=all 不应包含已删除, got %d (%+v)", search.Count, search.Items)
+	}
+	search, _ = svc.Search(ctx, service.MemoryQuery{Q: "回调超时时间", Status: "deleted", Limit: 10})
+	if search.Count != 1 || search.Items[0].ID != res.Memory.ID {
+		t.Fatalf("status=deleted 应只返回回收站记录, got %d (%+v)", search.Count, search.Items)
+	}
+}
+
+// TestMemoryStatsConsistency 统计口径自洽性（回归：前端「总量 15」但实际只有 14）。
+//
+// 三处口径必须一致：Stats.Total == 未分类 + Σ 命名空间 == 默认列表条数。
+// 曾经 Total 把 superseded/archived 也计入，于是「记忆总量」比命名空间卡片之和多，
+// 而「全部记忆」卡片写着 Total、点进去只列出 Active 条。
+func TestMemoryStatsConsistency(t *testing.T) {
+	svc, memories, _, _ := newMemoryEnv(t)
+	ctx := context.Background()
+
+	addMemory(t, svc, "活跃记忆甲", "pay")
+	oldMem := addMemory(t, svc, "会被替代的记忆乙", "pay").Memory
+	addMemory(t, svc, "未分类的记忆丙", "")
+	// 造一条被替代 + 一条归档，使库里同时存在四种状态
+	addMemory(t, svc, "推翻旧结论的记忆丁", "pay", func(in *service.MemoryAddInput) {
+		in.Supersedes = []int64{oldMem.ID}
+	})
+	arch := addMemory(t, svc, "归档的记忆戊", "pay").Memory
+	arched, err := memories.Get(ctx, arch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arched.Status = model.MemoryStatusArchived
+	if err := memories.Update(ctx, arched); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := svc.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Superseded != 1 || st.Archived != 1 {
+		t.Fatalf("前置条件不成立（应有 1 被替代 + 1 归档）: %+v", st)
+	}
+
+	sum := st.Uncategorized
+	for _, n := range st.ByNamespace {
+		sum += n
+	}
+	if st.Total != sum {
+		t.Fatalf("Total(%d) 应等于 未分类(%d)+Σ命名空间(%d): %+v", st.Total, st.Uncategorized, sum, st)
+	}
+
+	// 默认列表（status 空 = active）条数必须等于 Total
+	_, activeTotal, err := svc.List(ctx, service.MemoryQuery{Limit: 100}, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activeTotal != st.Total {
+		t.Fatalf("默认列表 %d 条应等于 Total %d: %+v", activeTotal, st.Total, st)
+	}
+	// 「全部状态」= Total + 被替代 + 归档，且不含已删除
+	_, allTotal, err := svc.List(ctx, service.MemoryQuery{Status: "all", Limit: 100}, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := st.Total + st.Superseded + st.Archived
+	if allTotal != want {
+		t.Fatalf("「全部状态」应为 %d 条（生效+被替代+归档），实际 %d: %+v", want, allTotal, st)
+	}
 }
 
 func TestMemoryUpdateAndBatchMove(t *testing.T) {

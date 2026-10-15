@@ -126,6 +126,9 @@ func applyMemoryFilter(q *gorm.DB, f MemoryFilter, prefix string) *gorm.DB {
 	if f.Status != "" {
 		q = q.Where(prefix+"status = ?", f.Status)
 	}
+	if f.ExcludeDeleted {
+		q = q.Where(prefix+"status <> ?", model.MemoryStatusDeleted)
+	}
 	if f.PinnedOnly {
 		q = q.Where(prefix + "pinned = 1")
 	}
@@ -280,8 +283,6 @@ func (r *MemoryRepo) Stats(ctx context.Context) (*MemoryStats, error) {
 		return nil, err
 	}
 	for _, row := range statusRows {
-		// 总量口径 = 未被软删除的记忆（生效 + 被替代 + 归档）；
-		// 软删除只计入 Deleted，否则「全部记忆」会数出用户看不见的回收站记录。
 		switch model.MemoryStatus(row.Key) {
 		case model.MemoryStatusActive:
 			st.Active = row.N
@@ -291,12 +292,17 @@ func (r *MemoryRepo) Stats(ctx context.Context) (*MemoryStats, error) {
 			st.Archived = row.N
 		case model.MemoryStatusDeleted:
 			st.Deleted = row.N
-			continue // 软删除不计入总量
 		default:
 			continue
 		}
-		st.Total += row.N
 	}
+	// 总量口径 = **生效**记忆，必须与下面两个口径严格相等：
+	//   ① Uncategorized + Σ ByNamespace（命名空间计数只统计 active）
+	//   ② 默认列表条数（MemoryQuery.Status 空 = active）
+	// 三者曾经各说各话：Total 把 superseded/archived 也算进去，于是首页「记忆总量 15」
+	// 与命名空间卡片「14」不相加，「全部记忆」卡片写着 15、点进去却只有 14 条。
+	// 被替代/归档各有专属计数与状态筛选，不再混进总量。
+	st.Total = st.Active
 
 	var kindRows []cntRow
 	if err := db.Model(&model.Memory{}).Select("kind AS key, COUNT(*) AS n").
