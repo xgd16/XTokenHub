@@ -175,6 +175,194 @@
   flex-wrap: wrap;
 }
 
+/* —— Hero 左右分栏（有 aside 时） —— */
+/* 状态条只归左栏，右侧面板因此能一路占满纵向空间，而不是被 foot 压掉一整行。 */
+.obs-hero-split {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: stretch;
+  gap: 22px;
+}
+
+.obs-hero-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* —— Hero 右侧内容区：面板 / 速览表，撑满右栏高度 —— */
+/* min-width:0 允许面板内表格列在窄屏收缩而不是撑破 hero。 */
+.obs-hero-aside-wrap {
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+}
+
+/* —— Hero 实时活动速览 —— */
+.obs-pulse {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  /* 吃满右栏剩余空间（宽高都不设上限）：这块本来就是填空白，不该再留空档。 */
+  width: 100%;
+  /* 左侧分隔线与读数行自带的竖线接续，让「左读数 / 右速览」读成同一行的两段 */
+  border-left: 1px solid var(--border-faint);
+  padding-left: 18px;
+}
+
+.obs-pulse-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.obs-pulse-meta {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.obs-pulse-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  /* 撑满右栏剩余高度：面板与左侧读数列等高，底部不吊着一截空白 */
+  flex: 1;
+  /* 行数下限：数据少/为空时 hero 高度仍由左侧读数列决定，不会塌下去 */
+  min-height: calc(6 * 21px);
+}
+
+/* 空态撑满预留高度并居中，避免只剩一行文字、下面拖一片无解释的空白 */
+.obs-pulse-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.obs-pulse-empty-title {
+  color: var(--text-secondary);
+}
+
+.obs-pulse-empty-sub {
+  font-size: 11px;
+  color: var(--text-faint);
+  opacity: 0.75;
+}
+
+.obs-pulse-row {
+  display: grid;
+  grid-template-columns: 6px 58px minmax(0, 1fr) 52px 52px 66px;
+  align-items: center;
+  gap: 8px;
+  /* 均分列表的剩余高度（21px 起、30px 封顶）：
+     满 6 条时铺满面板不吊底；只有 1~2 条时也不会被拉成一条巨高行。 */
+  flex: 1 1 auto;
+  min-height: 21px;
+  max-height: 30px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-faint);
+}
+
+.obs-pulse-row:last-child {
+  border-bottom: none;
+}
+
+.obs-pulse-row.empty {
+  color: var(--text-faint);
+}
+
+.obs-pulse-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.obs-pulse-dot.ok {
+  background: var(--accent);
+}
+
+.obs-pulse-dot.error {
+  background: var(--coral);
+  box-shadow: 0 0 7px var(--coral);
+}
+
+.obs-pulse-dot.running {
+  background: var(--amber);
+  box-shadow: 0 0 7px var(--amber);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.obs-pulse-time {
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.obs-pulse-model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+/* 三个读数列右对齐，保证小数点成列 */
+.obs-pulse-tok,
+.obs-pulse-dur,
+.obs-pulse-spd {
+  text-align: right;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.obs-pulse-spd {
+  color: var(--text-faint);
+}
+
+/* 中等宽度：先牺牲速度列（鼠标悬停行内可看完整模型名），保证模型名不被截成「deepseek-v4…」。 */
+@media (max-width: 1280px) {
+  .obs-pulse-row {
+    grid-template-columns: 6px 58px minmax(0, 1fr) 52px 52px;
+  }
+  .obs-pulse-spd {
+    display: none;
+  }
+}
+
+/* 左栏（读数）+ 右栏（速览）的最小宽度之和超出 hero 时改单列堆叠，否则会被
+   overflow:hidden 裁掉右栏。display:contents 把 main 摊平，让 foot 能用 order 排到末尾——
+   否则堆叠时状态条会夹在读数与速览中间，读起来像页面级页脚被劈成两半。 */
+@media (max-width: 1100px) {
+  .obs-hero-split {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+  .obs-hero-main {
+    display: contents;
+  }
+  .obs-hero-inner {
+    order: 1;
+  }
+  .obs-hero-aside-wrap {
+    order: 2;
+  }
+  .obs-hero-split .obs-hero-foot {
+    order: 3;
+  }
+}
+
 .obs-hero-foot {
   position: relative;
   margin-top: 18px;
@@ -793,6 +981,29 @@
   .obs-hero-actions {
     width: 100%;
   }
+  /* 移动端速览移到读数下方整宽显示；行数收敛为 3 条，避免首屏被它挤下去太多 */
+  .obs-pulse {
+    width: 100%;
+    /* 独立成块后左侧竖线会与上方读数栅格错位，改为顶部横线 */
+    border-left: none;
+    border-top: 1px solid var(--border-faint);
+    padding-left: 0;
+    padding-top: 12px;
+  }
+  .obs-pulse-list {
+    min-height: calc(3 * 21px);
+  }
+  .obs-pulse-row {
+    grid-template-columns: 6px 54px minmax(0, 1fr) 48px 48px;
+  }
+  /* 超过 3 条的实时行在窄屏隐藏：首屏优先看读数，流水的完整视图在页面底部 */
+  .obs-pulse-row:nth-child(n + 4) {
+    display: none;
+  }
+  /* 窄屏放不下速度列（信息密度让位于模型名），隐藏而非挤压 */
+  .obs-pulse-spd {
+    display: none;
+  }
   .obs-grid,
   .obs-grid.wide {
     grid-template-columns: 1fr;
@@ -801,7 +1012,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .obs-node-pulse,
-  .obs-flag.warn {
+  .obs-flag.warn,
+  .obs-pulse-dot.running {
     animation: none;
   }
   .obs-card,

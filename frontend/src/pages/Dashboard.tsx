@@ -10,6 +10,7 @@ import ModelTrendChart from '../components/ModelTrendChart'
 import ModelDonut from '../components/ModelDonut'
 import PeakPriceCard from '../components/PeakPriceCard'
 import { AnimatedNumber } from '../components/AnimatedNumber'
+import HeroLivePulse from '../components/HeroLivePulse'
 import { PageHero } from '../components/PageHero'
 import { Reveal } from '../utils/motion'
 import {
@@ -58,6 +59,9 @@ const LIVE_GROUP_MAX = 20
 
 /** 会话展开明细条数上限：只拉最近 N 条，合计仍为后端全量口径。 */
 const LIVE_DETAIL_MAX = 20
+
+/** Hero 速览的冷启动种子条数：与 HeroLivePulse 的展示行数一致，多拉无意义。 */
+const PULSE_SEED_MAX = 6
 
 /** 会话视图刷新节流：突发流量下避免每个请求都打一次接口。 */
 const LIVE_SESSIONS_THROTTLE_MS = 2000
@@ -712,6 +716,11 @@ export default function Dashboard() {
   const [statsLoaded, setStatsLoaded] = useState(false)
   const [slowLoaded, setSlowLoaded] = useState(false)
 
+  // Hero 速览的冷启动种子：live 只收 WS 事件（页面刚打开必然为空），
+  // 而当天通常已有请求；不补种子的话 hero 右侧在首屏是一整块空白。
+  const [pulseSeed, setPulseSeed] = useState<RequestLog[]>([])
+  const [pulseSeedLoaded, setPulseSeedLoaded] = useState(false)
+
   // 快速刷新：当天汇总 + 请求趋势 + 当天模型 TOP
   const statsLoadedOnce = useRef(false)
   const refresh = useCallback(async () => {
@@ -835,6 +844,24 @@ export default function Dashboard() {
     },
     [],
   )
+
+  // Hero 速览种子：只拉一次。失败不重试——它只是首屏填充，缺了顶多回到「等待请求」占位
+  useEffect(() => {
+    let alive = true
+    void logApi
+      .list({ page: 1, per_page: PULSE_SEED_MAX })
+      .then((page) => {
+        if (!alive) return
+        setPulseSeed(page.items ?? [])
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (alive) setPulseSeedLoaded(true)
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
 
   useEffect(() => {
     void refresh()
@@ -1033,6 +1060,7 @@ export default function Dashboard() {
             <span>数据经 WebSocket 实时推送 · 统计窗口：今天（本地零点起）</span>
           </>
         }
+        aside={<HeroLivePulse seed={pulseSeed} live={live} loading={!pulseSeedLoaded} />}
       />
       <Row gutter={[16, 16]} align="stretch">
         <Col xs={12} md={8} lg={4}>
