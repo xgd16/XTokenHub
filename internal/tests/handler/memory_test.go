@@ -435,6 +435,15 @@ func TestMCPHandshakeAndTools(t *testing.T) {
 	if !strings.Contains(ins, "memory_search") || !strings.Contains(ins, "memory_add") || !strings.Contains(ins, "Markdown") {
 		t.Fatalf("instructions 缺少使用时机引导: %q", ins)
 	}
+	// 同样地，关系绑定必须在 initialize 指令里就讲清楚；旧文案「无需手动补」会让 agent 永远不建边。
+	for _, kw := range []string{"links", "supersedes", "同一命名空间"} {
+		if !strings.Contains(ins, kw) {
+			t.Fatalf("instructions 缺少关系绑定指引 %q: %q", kw, ins)
+		}
+	}
+	if strings.Contains(ins, "无需手动补") {
+		t.Fatalf("instructions 仍在劝 agent 不要手动建边: %q", ins)
+	}
 
 	// tools/list
 	code, env = mcp(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
@@ -453,6 +462,50 @@ func TestMCPHandshakeAndTools(t *testing.T) {
 		if !names[want] {
 			t.Fatalf("缺少工具 %s", want)
 		}
+	}
+
+	// memory_add 的关系参数是 agent 唯一能拿到「有向语义边」的入口：
+	// 自动关联只产 related 且限同命名空间，conflicts/derived_from/supersedes 全靠这里显式声明。
+	// 参数没写进 schema / 工具描述还劝 agent「无需手动补」，关系图就会长期只有自动弱边。
+	addSchema := map[string]any{}
+	for _, tool := range tools {
+		tm := tool.(map[string]any)
+		if tm["name"] != "memory_add" {
+			continue
+		}
+		addSchema = tm
+	}
+	if addSchema["description"] == nil {
+		t.Fatal("memory_add 缺少 description")
+	}
+	addDesc, _ := addSchema["description"].(string)
+	for _, kw := range []string{"links", "supersedes", "不会产出", "孤点"} {
+		if !strings.Contains(addDesc, kw) {
+			t.Fatalf("memory_add description 缺少关系指引 %q: %s", kw, addDesc)
+		}
+	}
+	// 旧文案「无需手动补」会把 agent 引导到不建边，必须已移除。
+	if strings.Contains(addDesc, "无需手动补") {
+		t.Fatalf("memory_add description 仍在劝 agent 不要手动建边: %s", addDesc)
+	}
+	props, _ := addSchema["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	for _, key := range []string{"links", "supersedes"} {
+		prop, ok := props[key].(map[string]any)
+		if !ok {
+			t.Fatalf("memory_add 缺少参数 %s", key)
+		}
+		if prop["description"] == nil || prop["description"] == "" {
+			t.Fatalf("memory_add.%s 缺少 description（agent 无从判断何时使用）", key)
+		}
+	}
+	// links[].relation 必须是带说明的枚举，否则 agent 只能猜合法值
+	linkItems := props["links"].(map[string]any)["items"].(map[string]any)
+	rel, _ := linkItems["properties"].(map[string]any)["relation"].(map[string]any)
+	if rel == nil || rel["description"] == nil {
+		t.Fatalf("memory_add.links[].relation 缺少说明: %v", rel)
+	}
+	if got := rel["enum"].([]any); len(got) != 4 {
+		t.Fatalf("relation 枚举 = %v", got)
 	}
 
 	// tools/call memory_add

@@ -155,7 +155,7 @@ func (h *Handler) initialize(params json.RawMessage) any {
 		"protocolVersion": version,
 		"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
 		"serverInfo":      map[string]any{"name": serverName, "version": serverVersion},
-		"instructions":    "XTokenHub 记忆库：本环境的共享长期记忆（跨会话）。需要记住或回忆时一律用这套 memory_* 工具，不必等用户提醒：① 开始任务前先 memory_search 检索已有结论/约定/踩坑，避免重复探索；② 任务中形成结论、决策、约定、踩坑经验时主动 memory_add 写入；③ 旧结论被推翻时写新记忆并标 supersedes（memory_add 的 supersedes 参数或 memory_link），不要直接删除。写入规范：正文用 Markdown（标题/列表/代码块），namespace 填主题（不填=未分类），kind 标注类型。系统会在写入/更新后自动维护相似记忆的 related 关联（auto_links），无需手动补。",
+		"instructions":    "XTokenHub 记忆库：本环境的共享长期记忆（跨会话）。需要记住或回忆时一律用这套 memory_* 工具，不必等用户提醒：① 开始任务前先 memory_search 检索已有结论/约定/踩坑，避免重复探索；② 任务中形成结论、决策、约定、踩坑经验时主动 memory_add 写入；③ 旧结论被推翻时写新记忆并标 supersedes（memory_add 的 supersedes 参数或 memory_link），不要直接删除。写入规范：正文用 Markdown（标题/列表/代码块），namespace 填主题（不填=未分类），kind 标注类型。\n\n关系绑定（关系图的数据来源，务必重视）：写入时系统会自动按内容相似度补 related 边，但它**只在同一命名空间内**生效、阈值较高、且永远不会产出 conflicts / derived_from / supersedes。所以只要你已知的语义关系（同一主题互为背景 / 推翻旧结论 / 派生出另一条 / 与某条矛盾），就必须在 memory_add 里用 links 或 supersedes 显式写出来——target id 要先 memory_search 查真实值，不要臆造。宁可多写一条边，也不要留孤点。",
 	}
 }
 
@@ -314,16 +314,30 @@ func toolDefinitions() []map[string]any {
 	num := map[string]any{"type": "integer"}
 	boolT := map[string]any{"type": "boolean"}
 	strArr := map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
-	intArr := map[string]any{"type": "array", "items": map[string]any{"type": "integer"}}
 	kindEnum := map[string]any{
 		"type": "string",
 		"enum": []string{"note", "fact", "decision", "convention", "preference", "task", "lesson"},
+	}
+	// 关系类型：自动关联只会产出 related，其余三种只能由调用方显式声明，
+	// 所以枚举和说明必须写全，否则 agent 不知道该传什么。
+	relationDesc := "关系类型，描述「本条 → to_id」这个方向：related=相关（互为背景）；" +
+		"conflicts=与 to_id 矛盾；derived_from=本条派生自 to_id；" +
+		"supersedes=本条替代 to_id——它还会把 to_id 置为 superseded，" +
+		"所以要表达替代关系请改用 memory_add 的顶层 supersedes 参数，而不是本字段。"
+	relationEnum := map[string]any{
+		"type":        "string",
+		"enum":        []string{"related", "supersedes", "conflicts", "derived_from"},
+		"description": relationDesc,
 	}
 
 	return []map[string]any{
 		{
 			"name":        "memory_add",
-			"description": "写入一条长期记忆（同命名空间内同内容自动去重）。开发/执行任务中的结论、决策、约定、踩坑经验都值得写入。namespace 指定归属命名空间（主题），不指定则进「未分类」。正文请用 Markdown 组织（标题、列表、代码块），控制台会渲染展示。写入后系统会自动按内容相似度关联同命名空间内的记忆（见返回 auto_links），无需手动补 related 边。",
+			"description": "写入一条长期记忆（同命名空间内同内容自动去重）。开发/执行任务中的结论、决策、约定、踩坑经验都值得写入。namespace 指定归属命名空间（主题），不指定则进「未分类」。正文请用 Markdown 组织（标题、列表、代码块），控制台会渲染展示。\n\n" +
+				"【务必显式声明关系】写入后系统只会按内容相似度自动补 related 边，且**仅限同一命名空间内**、最多 3 条、阈值较高——" +
+				"它既连不到跨命名空间的记忆，也永远不会产出 conflicts / derived_from / supersedes。" +
+				"所以只要你心里清楚这条记忆和已有记忆的关系（同一主题的补充、推翻旧结论、派生出另一条、与某条矛盾），" +
+				"就**必须**通过 links / supersedes 参数写出来，否则关系图上这条会是孤点。",
 			"inputSchema": map[string]any{
 				"type":     "object",
 				"required": []string{"content"},
@@ -337,14 +351,20 @@ func toolDefinitions() []map[string]any {
 					"pinned":     boolT,
 					"expires_at": map[string]any{"type": "string", "description": "过期时间 RFC3339（可空）"},
 					"source_ref": map[string]any{"type": "string", "description": "来源引用（仓库/文件/任务号）"},
-					"supersedes": intArr,
+					"supersedes": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "integer"},
+						"description": "被本条推翻/替代的旧记忆 id 列表。每一项都会建立一条 supersedes 边并把旧条置为 superseded。推翻旧结论时必填，不要直接 memory_forget 删掉。",
+					},
 					"links": map[string]any{
 						"type": "array",
 						"items": map[string]any{
 							"type":       "object",
 							"required":   []string{"to_id"},
-							"properties": map[string]any{"to_id": num, "relation": str, "note": str},
+							"properties": map[string]any{"to_id": num, "relation": relationEnum, "note": str},
 						},
+						"description": "要与之建立关系的目标记忆 id 列表（target 必须先 memory_search 查到真实 id，不要臆造）。" +
+							"用于 related / conflicts / derived_from；替代关系请用顶层 supersedes。",
 					},
 				},
 			},
@@ -396,13 +416,13 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "memory_link",
-			"description": "为两条记忆建立关系边（related/supersedes/conflicts/derived_from），用于记忆关系图。系统自动维护 related；语义确定的关系（冲突/派生/替代）用它显式补充。已存在的同关系边幂等。",
+			"description": "为两条记忆建立关系边（related/supersedes/conflicts/derived_from），用于记忆关系图。已存在的同关系边幂等。系统自动关联只覆盖 related 且限同命名空间，语义确定的关系（冲突/派生）必须用它显式补充。",
 			"inputSchema": map[string]any{
 				"type": "object", "required": []string{"from_id", "to_id"},
 				"properties": map[string]any{
 					"from_id":  num,
 					"to_id":    num,
-					"relation": map[string]any{"type": "string", "enum": []string{"related", "supersedes", "conflicts", "derived_from"}},
+					"relation": relationEnum,
 					"note":     str,
 				},
 			},
