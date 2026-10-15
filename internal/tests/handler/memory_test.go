@@ -212,6 +212,97 @@ func TestMemoryLinksAndGraph(t *testing.T) {
 	}
 }
 
+// TestMemoryCreateWithLinks 写入时随请求带 links / supersedes 建边。
+// 回归点：service.MemoryLinkInput 曾缺 json tag，而 MCP memory_add 的 links[] 与
+// 控制台 POST /memories 的 links 都直接反序列化它 → `to_id` 匹配不上 `ToID`，
+// 所有显式 links 被判「含非法 to_id」，写入时建边功能形同虚设。
+func TestMemoryCreateWithLinks(t *testing.T) {
+	_, srv := newTestEnv(t)
+	addID := func(path string, body map[string]any) int64 {
+		code, env, _ := doJSON(t, srv, "POST", path, body)
+		if code != 200 || env["code"] != float64(0) {
+			t.Fatalf("add %s: %d %v", path, code, env)
+		}
+		return int64(env["data"].(map[string]any)["memory"].(map[string]any)["id"].(float64))
+	}
+	linksOf := func(id int64) []any {
+		code, env, _ := doJSON(t, srv, "GET", "/memory/v1/memories/"+itoa(id), nil)
+		if code != 200 || env["code"] != float64(0) {
+			t.Fatalf("get %d: %d %v", id, code, env)
+		}
+		return env["data"].(map[string]any)["links"].([]any)
+	}
+
+	// 目标记忆
+	target := addID("/memory/v1/memories", map[string]any{
+		"content": "建边目标：限流阈值统一为 100 QPS。", "namespace": "design",
+	})
+
+	// 控制台面 + agent 面：create 时带 links 必须真的建出边
+	for _, path := range []string{"/api/v1/memories", "/memory/v1/memories"} {
+		created := addID(path, map[string]any{
+			"content": "由 " + path + " 写入并建边：限流改为按接口维度配置。", "namespace": "design",
+			"links": []map[string]any{
+				{"to_id": target, "relation": "derived_from", "note": "在旧阈值上细化"},
+			},
+		})
+		ls := linksOf(created)
+		// 自动关联还会补 related 边，所以按「存在 derived_from 且字段没丢」来断言，
+		// 不能数总条数
+		var found map[string]any
+		for _, l := range ls {
+			if l.(map[string]any)["relation"] == "derived_from" {
+				found = l.(map[string]any)
+			}
+		}
+		if found == nil {
+			t.Fatalf("%s create 带 links 未建出 derived_from 边: %v", path, ls)
+		}
+		if found["note"] != "在旧阈值上细化" {
+			t.Fatalf("%s links.note 丢失: %v", path, found)
+		}
+		if int64(found["to_id"].(float64)) != target {
+			t.Fatalf("%s links.to_id 丢失: %v", path, found)
+		}
+		// 反向确认目标记忆也看得到这条边
+		if len(linksOf(target)) == 0 {
+			t.Fatalf("%s 建边未双向可见", path)
+		}
+	}
+
+	// supersedes：必须既建边又翻转旧条状态（只建边是半截结果）
+	oldID := addID("/memory/v1/memories", map[string]any{
+		"content": "将被推翻：限流固定 100 QPS。", "namespace": "design",
+	})
+	newID := addID("/api/v1/memories", map[string]any{
+		"content": "推翻旧结论：限流改为动态计算。", "namespace": "design",
+		"supersedes": []int64{oldID},
+	})
+	if newID == oldID {
+		t.Fatalf("两条内容不同，不应被判重复")
+	}
+	var supFound bool
+	for _, l := range linksOf(newID) {
+		if l.(map[string]any)["relation"] == "supersedes" {
+			supFound = true
+		}
+	}
+	if !supFound {
+		t.Fatalf("supersedes 未建边: %v", linksOf(newID))
+	}
+	code, env, _ := doJSON(t, srv, "GET", "/memory/v1/memories/"+itoa(oldID), nil)
+	if code != 200 {
+		t.Fatalf("get old: %d", code)
+	}
+	oldMem := env["data"].(map[string]any)["memory"].(map[string]any)
+	if oldMem["status"] != "superseded" {
+		t.Fatalf("supersedes 未翻转旧记忆状态: %v", oldMem["status"])
+	}
+	if int64(oldMem["superseded_by"].(float64)) != newID {
+		t.Fatalf("superseded_by = %v, 期望 %d", oldMem["superseded_by"], newID)
+	}
+}
+
 // TestMemoryNamespacesAndStats 命名空间清单与统计接口。
 func TestMemoryNamespacesAndStats(t *testing.T) {
 	_, srv := newTestEnv(t)
@@ -382,6 +473,16 @@ func TestMCPHandshakeAndTools(t *testing.T) {
 	if !strings.Contains(text, "配置约定") || !strings.Contains(text, "duplicated") {
 		t.Fatalf("memory_add 返回: %s", text)
 	}
+	// 记下这条的 id：下面的建边用例要用真实 id（agent 也必须先 memory_search 查到）
+	var added struct {
+		Memory struct {
+			ID int64 `json:"id"`
+		} `json:"memory"`
+	}
+	if err := json.Unmarshal([]byte(text), &added); err != nil || added.Memory.ID == 0 {
+		t.Fatalf("解析 memory_add 返回拿 id 失败: %v %s", err, text)
+	}
+	baseID := added.Memory.ID
 
 	// tools/call memory_search（中文检索）
 	code, env = mcp(map[string]any{
@@ -391,6 +492,62 @@ func TestMCPHandshakeAndTools(t *testing.T) {
 	text = env["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
 	if !strings.Contains(text, "配置约定") {
 		t.Fatalf("memory_search 未命中: %s", text)
+	}
+
+	// 端到端：memory_add 显式传 links / supersedes 必须真的建边。
+	// 只断言 schema 描述是不够的——真正保证 agent 建边的是这条链路可用。
+	code, env = mcp(map[string]any{
+		"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+		"params": map[string]any{
+			"name": "memory_add",
+			"arguments": map[string]any{
+				"content": "MCP 显式建边：连接池配置改为按 CPU 核数计算。", "namespace": "配置约定",
+				"links": []map[string]any{
+					{"to_id": baseID, "relation": "derived_from", "note": "在旧结论上细化"},
+				},
+			},
+		},
+	})
+	if env["result"].(map[string]any)["isError"] != false {
+		t.Fatalf("带 links 的 memory_add 失败: %v", env)
+	}
+	linkText := env["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	if !strings.Contains(linkText, "links") || !strings.Contains(linkText, "derived_from") {
+		t.Fatalf("memory_add 未回显 links: %s", linkText)
+	}
+	// 原记忆应多出一条 derived_from 边
+	code, env = mcp(map[string]any{
+		"jsonrpc": "2.0", "id": 8, "method": "tools/call",
+		"params": map[string]any{"name": "memory_get", "arguments": map[string]any{"id": baseID}},
+	})
+	if code != 200 {
+		t.Fatalf("memory_get: %d", code)
+	}
+	if !strings.Contains(env["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string), "derived_from") {
+		t.Fatalf("显式 links 未建边: %v", env)
+	}
+
+	// supersedes 必须同时「建边 + 翻转旧条状态」，不能只建边
+	code, env = mcp(map[string]any{
+		"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+		"params": map[string]any{
+			"name":      "memory_add",
+			"arguments": map[string]any{"content": "MCP 推翻旧结论：连接池一律固定为 4。", "namespace": "配置约定", "supersedes": []int64{baseID}},
+		},
+	})
+	if env["result"].(map[string]any)["isError"] != false {
+		t.Fatalf("带 supersedes 的 memory_add 失败: %v", env)
+	}
+	code, env = mcp(map[string]any{
+		"jsonrpc": "2.0", "id": 10, "method": "tools/call",
+		"params": map[string]any{"name": "memory_get", "arguments": map[string]any{"id": baseID}},
+	})
+	oldText := env["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	if !strings.Contains(oldText, "superseded") {
+		t.Fatalf("supersedes 未翻转旧记忆状态: %s", oldText)
+	}
+	if !strings.Contains(oldText, "supersedes") {
+		t.Fatalf("supersedes 未建边: %s", oldText)
 	}
 
 	// 工具执行错误 → result.isError（不是协议错误）

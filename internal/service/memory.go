@@ -134,9 +134,13 @@ type MemoryAddInput struct {
 
 // MemoryLinkInput 建边入参。
 type MemoryLinkInput struct {
-	ToID     int64
-	Relation string
-	Note     string
+	// 必须带 json tag：MCP memory_add 的 links[] 与控制台 POST /memories 的 links
+	// 都直接反序列化本结构。缺 tag 时 encoding/json 只能按字段名做大小写不敏感匹配，
+	// 而 `to_id` 与 `ToID` 差一个下划线 → 匹配不上 → ToID 恒为 0，
+	// 结果是所有显式 links 都被判「含非法 to_id」，建边功能形同虚设。
+	ToID     int64  `json:"to_id"`
+	Relation string `json:"relation"`
+	Note     string `json:"note"`
 }
 
 // MemoryUpdateInput 更新入参（指针字段 = 提供才更新）。

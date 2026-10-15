@@ -9,8 +9,9 @@ import {
 import dayjs from 'dayjs'
 import { useNavigate, useParams } from 'react-router'
 import {
-  MEMORY_KINDS, memoryApi, tagsOf,
+  MEMORY_KINDS, memoryApi, pendingLinksToInput, tagsOf,
   type MemoryGraph as GraphData, type MemoryHit, type MemoryItem, type MemoryKind, type MemoryLink,
+  type PendingMemoryLink,
 } from '../api/memory'
 import MemoryDrawer from '../components/MemoryDrawer'
 import MemoryGraph, { namespaceColor } from '../components/MemoryGraph'
@@ -60,6 +61,8 @@ export default function MemoryNamespace() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editing, setEditing] = useState<MemoryItem | null>(null)
   const [links, setLinks] = useState<MemoryLink[]>([])
+  /** 新建模式下待建立的关系，随 create 一次提交（后端建边需要新记忆 id）。 */
+  const [pendingLinks, setPendingLinks] = useState<PendingMemoryLink[]>([])
   const [form] = Form.useForm()
 
   // 切换命名空间（同一路由组件实例复用）时重置检索与选择
@@ -129,6 +132,7 @@ export default function MemoryNamespace() {
   const openCreate = () => {
     setEditing(null)
     setLinks([])
+    setPendingLinks([])
     form.resetFields()
     form.setFieldsValue({
       kind: 'note', importance: 3, pinned: false, tags: [],
@@ -142,6 +146,7 @@ export default function MemoryNamespace() {
       const res = await memoryApi.get(id)
       setEditing(res.memory)
       setLinks(res.links)
+      setPendingLinks([])
       form.setFieldsValue({
         title: res.memory.title,
         content: res.memory.content,
@@ -168,14 +173,19 @@ export default function MemoryNamespace() {
         })
         message.success('已保存')
       } else {
+        // 待建关系随 create 一起发：替代类走 supersedes（同时翻转旧记忆状态），其余走 links
+        const rel = pendingLinksToInput(pendingLinks)
         const res = await memoryApi.create({
           title: values.title, content: values.content,
           namespace: values.namespace ?? '', kind: values.kind,
           tags: values.tags ?? [], importance: values.importance, pinned: values.pinned,
+          links: rel.links, supersedes: rel.supersedes,
         })
+        const bound = (res.links?.length ?? 0) + (res.superseded?.length ?? 0)
         message.success(res.duplicated
           ? '同内容记忆已存在，未重复写入'
-          : `已写入${res.auto_links?.length ? `，自动关联 ${res.auto_links.length} 条相似记忆` : ''}`)
+          : `已写入${bound ? `，已建立 ${bound} 条关系` : ''}${res.auto_links?.length ? `，自动关联 ${res.auto_links.length} 条相似记忆` : ''}`)
+        setPendingLinks([])
       }
       setDrawerOpen(false)
       await refreshMemoryNamespaces()
@@ -417,6 +427,8 @@ export default function MemoryNamespace() {
         open={drawerOpen}
         editing={editing}
         links={links}
+        pendingLinks={pendingLinks}
+        onPendingLinksChange={setPendingLinks}
         form={form}
         nsOptions={drawerNsOptions}
         onClose={() => setDrawerOpen(false)}

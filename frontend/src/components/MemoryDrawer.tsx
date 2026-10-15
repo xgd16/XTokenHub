@@ -7,7 +7,7 @@ import { DeleteOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import {
   MEMORY_KINDS, MEMORY_LINK_RELATIONS, memoryApi,
-  type MemoryItem, type MemoryLink, type MemoryLinkRelation,
+  type MemoryItem, type MemoryLink, type MemoryLinkRelation, type PendingMemoryLink,
 } from '../api/memory'
 import { nsSourceLabel, statusColor, statusLabel } from '../utils/memoryMeta'
 import { MemoryMarkdown } from './MemoryMarkdown'
@@ -16,6 +16,9 @@ interface Props {
   open: boolean
   editing: MemoryItem | null
   links: MemoryLink[]
+  /** 新建模式下待建立的关系（还没落库，提交时随 create 一起发）。 */
+  pendingLinks: PendingMemoryLink[]
+  onPendingLinksChange: (next: PendingMemoryLink[]) => void
   form: FormInstance
   nsOptions: { value: string; label: string }[]
   onClose: () => void
@@ -27,10 +30,12 @@ interface Props {
 
 /** 记忆详情/编辑抽屉（详情页与写入共用）。 */
 export default function MemoryDrawer({
-  open, editing, links, form, nsOptions, onClose, onSave, onDelete, onLinksChanged, onOpenMemory,
+  open, editing, links, pendingLinks, onPendingLinksChange,
+  form, nsOptions, onClose, onSave, onDelete, onLinksChanged, onOpenMemory,
 }: Props) {
   const { message } = App.useApp()
   const [linkTarget, setLinkTarget] = useState<number | null>(null)
+  const [linkTargetTitle, setLinkTargetTitle] = useState('')
   const [linkRelation, setLinkRelation] = useState<MemoryLinkRelation>('related')
   const [candidates, setCandidates] = useState<{ value: string; label: string }[]>([])
   const searchTimer = useRef<number | null>(null)
@@ -53,6 +58,40 @@ export default function MemoryDrawer({
         /* 搜索失败忽略 */
       }
     }, 300)
+  }
+
+  const resetLinkDraft = () => {
+    setLinkTarget(null)
+    setLinkTargetTitle('')
+    setLinkRelation('related')
+  }
+
+  const relationLabel = (r: MemoryLinkRelation) =>
+    MEMORY_LINK_RELATIONS.find((x) => x.value === r)?.label ?? r
+
+  const submitLink = async () => {
+    if (!linkTarget) {
+      message.warning('请先选择目标记忆')
+      return
+    }
+    // 新建：先攒进待建列表，随 create 一次提交（后端建边时新记忆才有 id）
+    if (!editing) {
+      if (pendingLinks.some((p) => p.to_id === linkTarget)) {
+        message.warning('该记忆已在待建关系里')
+        return
+      }
+      onPendingLinksChange([...pendingLinks, { to_id: linkTarget, relation: linkRelation, title: linkTargetTitle }])
+      resetLinkDraft()
+      return
+    }
+    try {
+      await memoryApi.addLink(editing.id, { to_id: linkTarget, relation: linkRelation })
+      message.success('已建立关系')
+      resetLinkDraft()
+      await onLinksChanged()
+    } catch (e) {
+      message.error((e as Error).message)
+    }
   }
 
   return (
@@ -133,22 +172,27 @@ export default function MemoryDrawer({
       </Form>
 
       {editing && (
-        <>
-          <div style={{ margin: '8px 0 12px', fontSize: 12, opacity: 0.75 }}>
-            状态：<Tag color={statusColor[editing.status]}>{statusLabel[editing.status]}</Tag>
-            归属方式：{nsSourceLabel[editing.namespace_source] ?? editing.namespace_source} ·
-            来源：{editing.source}（{editing.created_by || '—'}）·
-            访问 {editing.access_count} 次 ·
-            创建 {dayjs(editing.created_at).format('YYYY-MM-DD HH:mm')}
-            {editing.superseded_by > 0 && <> · 被 #{editing.superseded_by} 替代</>}
-          </div>
+        <div style={{ margin: '8px 0 12px', fontSize: 12, opacity: 0.75 }}>
+          状态：<Tag color={statusColor[editing.status]}>{statusLabel[editing.status]}</Tag>
+          归属方式：{nsSourceLabel[editing.namespace_source] ?? editing.namespace_source} ·
+          来源：{editing.source}（{editing.created_by || '—'}）·
+          访问 {editing.access_count} 次 ·
+          创建 {dayjs(editing.created_at).format('YYYY-MM-DD HH:mm')}
+          {editing.superseded_by > 0 && <> · 被 #{editing.superseded_by} 替代</>}
+        </div>
+      )}
 
-          <div style={{ fontWeight: 600, margin: '12px 0 8px' }}>关系（共 {links.length} 条）</div>
-          {links.map((l) => {
+      {/* 关系：新建时先攒「待建」，随 create 一起提交；编辑时直接落库 */}
+      <div style={{ fontWeight: 600, margin: '12px 0 8px' }}>
+        {editing ? `关系（共 ${links.length} 条）` : '建立关系（可留空，保存后仍可再补）'}
+      </div>
+
+      {editing
+        ? links.map((l) => {
             const other = l.from_id === editing.id ? l.to_id : l.from_id
             return (
               <div key={l.id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <Tag>{MEMORY_LINK_RELATIONS.find((r) => r.value === l.relation)?.label ?? l.relation}</Tag>
+                <Tag>{relationLabel(l.relation)}</Tag>
                 <a onClick={() => onOpenMemory(other)}>#{other}</a>
                 <span style={{ fontSize: 12, opacity: 0.7, flex: 1 }}>{l.note}</span>
                 <Button
@@ -167,41 +211,50 @@ export default function MemoryDrawer({
                 />
               </div>
             )
-          })}
-          <Space.Compact style={{ width: '100%', marginTop: 8 }}>
-            <AutoComplete
-              style={{ width: '60%' }}
-              options={candidates}
-              onSearch={searchCandidates}
-              onChange={(v) => setLinkTarget(Number(v) || null)}
-              placeholder="搜索目标记忆（关键词）"
-            />
-            <Select
-              style={{ width: 130 }}
-              value={linkRelation}
-              onChange={setLinkRelation}
-              options={MEMORY_LINK_RELATIONS}
-            />
-            <Button
-              onClick={async () => {
-                if (!linkTarget) {
-                  message.warning('请先选择目标记忆')
-                  return
-                }
-                try {
-                  await memoryApi.addLink(editing.id, { to_id: linkTarget, relation: linkRelation })
-                  message.success('已建立关系')
-                  await onLinksChanged()
-                } catch (e) {
-                  message.error((e as Error).message)
-                }
-              }}
-            >
-              加关系
-            </Button>
-          </Space.Compact>
-        </>
+          })
+        : pendingLinks.map((p) => (
+            <div key={`${p.relation}-${p.to_id}`} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <Tag>{relationLabel(p.relation)}</Tag>
+              <a onClick={() => onOpenMemory(p.to_id)}>#{p.to_id}</a>
+              <span style={{ fontSize: 12, opacity: 0.7, flex: 1 }}>{p.title}</span>
+              <Button
+                type="text"
+                size="small"
+                danger
+                icon={<DeleteOutlined />}
+                onClick={() => onPendingLinksChange(pendingLinks.filter((x) => x.to_id !== p.to_id))}
+              />
+            </div>
+          ))}
+
+      {(!editing || links.length === 0) && (
+        <div style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 4 }}>
+          {editing ? '还没有关系' : '未选择关系时仅按内容相似度自动关联'}
+        </div>
       )}
+
+      <Space.Compact style={{ width: '100%', marginTop: 8 }}>
+        <AutoComplete
+          style={{ width: '60%' }}
+          options={candidates}
+          onSearch={searchCandidates}
+          onChange={(v) => {
+            const id = Number(v) || null
+            setLinkTarget(id)
+            // 选中项的标题用于待建列表展示；回退成 #id
+            const hit = candidates.find((c) => c.value === v)
+            setLinkTargetTitle(hit ? hit.label.slice(hit.label.indexOf('·') + 1).trim() : '')
+          }}
+          placeholder="搜索目标记忆（关键词）"
+        />
+        <Select
+          style={{ width: 130 }}
+          value={linkRelation}
+          onChange={setLinkRelation}
+          options={MEMORY_LINK_RELATIONS}
+        />
+        <Button onClick={submitLink}>{editing ? '加关系' : '加入待建'}</Button>
+      </Space.Compact>
     </Drawer>
   )
 }

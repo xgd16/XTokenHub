@@ -155,6 +155,36 @@ export interface MemoryInput {
   links?: { to_id: number; relation?: MemoryLinkRelation; note?: string }[]
 }
 
+/** 新建记忆时「先攒着、随提交一起发」的一条关系。 */
+export interface PendingMemoryLink {
+  to_id: number
+  relation: MemoryLinkRelation
+  /** 目标记忆标题，仅用于提交前展示，不发给后端。 */
+  title: string
+}
+
+/**
+ * 待建关系 → create 入参。
+ * 「替代」必须走 supersedes 而不是普通 link：它除了建边（new → old，supersedes）
+ * 还会把旧记忆置为 superseded 并回填 superseded_by，只发 links 只会多一条边、
+ * 状态不变。派生自/相关/冲突才是普通有向边。
+ */
+export function pendingLinksToInput(
+  pending: PendingMemoryLink[],
+): { links: { to_id: number; relation: MemoryLinkRelation }[]; supersedes: number[] } {
+  const supersedes: number[] = []
+  const links: { to_id: number; relation: MemoryLinkRelation }[] = []
+  const seen = new Set<number>()
+  for (const p of pending) {
+    // 同一目标只认一条（重复提交后端虽幂等，但列表上会出现重复行）
+    if (seen.has(p.to_id)) continue
+    seen.add(p.to_id)
+    if (p.relation === 'supersedes') supersedes.push(p.to_id)
+    else links.push({ to_id: p.to_id, relation: p.relation })
+  }
+  return { links, supersedes }
+}
+
 export interface MemoryUpdate {
   title?: string
   content?: string
