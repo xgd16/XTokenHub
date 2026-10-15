@@ -185,6 +185,18 @@
   gap: 22px;
 }
 
+/* 「左读数 / 右速览」的桌面分栏：左栏宽度只跟视口有关，绝不参与内容计算。
+   读数是实时数字（0 ↔ 867.33万、2Hz 吞吐刷新），一旦用 auto 定宽，每次数字
+   位数变化都会把分隔线和右侧速览整块推来推去（实测位移可达 140px）。
+   下界 520px 按最宽读数组合留量（999.9K / 1234.57万 / ¥1,234.56 / 1234 约 508px），
+   上界 560px 封顶避免宽屏白占；读数本身仍是 max-content，不会截断数字。
+   min-width 门槛与下面的堆叠断点一致：窄屏是单列 2×2 栅格，不吃这套规则。 */
+@media (min-width: 1101px) {
+  .obs-hero-split {
+    grid-template-columns: clamp(520px, 44vw, 560px) minmax(0, 1fr);
+  }
+}
+
 .obs-hero-main {
   display: flex;
   flex-direction: column;
