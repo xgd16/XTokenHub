@@ -9,10 +9,16 @@ const ns = [
 const groups = buildNav(ns)
 
 describe('buildNav', () => {
-  it('按观测/网关/模型/记忆分组，编号唯一', () => {
-    expect(groups.map((g) => g.code)).toEqual(['OBS', 'GATE', 'MOD', 'MEM'])
+  it('按观测/网关/模型/记忆/系统分组，编号唯一', () => {
+    expect(groups.map((g) => g.code)).toEqual(['OBS', 'GATE', 'MOD', 'MEM', 'SYS'])
     const codes = navLeaves(groups).map((l) => l.code).filter(Boolean)
     expect(new Set(codes).size).toBe(codes.length)
+  })
+
+  // 841cc2f 重写导航轨时漏掉了配置管理入口，页面与路由还在但侧栏进不去。
+  it('配置管理有侧栏入口', () => {
+    const settings = navLeaves(groups).find((l) => l.path === '/settings')
+    expect(settings).toMatchObject({ label: '配置管理', code: '09' })
   })
 
   it('记忆库子树带命名空间与计数', () => {

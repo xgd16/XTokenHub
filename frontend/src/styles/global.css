@@ -97,6 +97,28 @@ body::before {
   letter-spacing: 0.01em;
 }
 
+/* 滚动数字的定宽盒子（AnimatedNumber）：数字补间时字符数一路变化（0 → 67.58万），
+   若盒子宽度跟着文字走，max-content 栅格里的读数列每帧都要重排，相邻读数与分隔线
+   被推来推去（仪表盘 hero 四个读数、记忆库卡片都吃这条）。
+   这里把目标值文本（data-reserve）当隐形占位，与滚动中的实时文本叠在同一网格格里：
+   盒子宽度只由目标文本决定，动画在固定宽度里跑完；::after 而非真实节点，
+   不污染 textContent / 复制内容。 */
+.animated-number {
+  display: inline-grid;
+  justify-items: start;
+  white-space: nowrap;
+}
+
+.animated-number > *,
+.animated-number::after {
+  grid-area: 1 / 1;
+}
+
+.animated-number::after {
+  content: attr(data-reserve);
+  visibility: hidden;
+}
+
 /* 面板通用 */
 .panel {
   background: var(--panel-gradient);

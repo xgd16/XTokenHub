@@ -7,6 +7,7 @@ import {
   FileTextOutlined,
   KeyOutlined,
   NodeIndexOutlined,
+  SettingOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons'
 import type { MemoryNamespaceView } from '../api/memory'
@@ -99,6 +100,15 @@ export function buildNav(namespaces: MemoryNamespaceView[] = []): NavGroup[] {
       code: 'MEM',
       label: '记忆',
       nodes: [memoryNode(namespaces)],
+    },
+    {
+      // 配置管理独立成组：计费/数据/凭证这些系统级维护不该混进业务分组，
+      // 也让位号 09 与 /settings 页眉的 settings 眉题对得上。
+      code: 'SYS',
+      label: '系统',
+      nodes: [
+        leaf('/settings', '配置管理', <SettingOutlined />, '09', 'settings 设置 配置 价格 汇率 预算 会话 凭证'),
+      ],
     },
   ]
 }

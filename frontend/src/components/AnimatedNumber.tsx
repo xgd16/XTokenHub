@@ -10,7 +10,11 @@ interface AnimatedNumberProps {
   format: (n: number) => string
 }
 
-/** 弹簧式数字滚动：0 → value 起始即滚动，后续每次 value 变化平滑过渡。 */
+/** 弹簧式数字滚动：0 → value 起始即滚动，后续每次 value 变化平滑过渡。
+ *
+ *  外层用目标值文本（data-reserve）撑住盒宽，样式见 global.css 的 .animated-number：
+ *  补间过程每帧的字符数都不同（0 → 1 → … → 9999 → 1万 → 67.58万），若宽度跟着
+ *  实时文本走，读数所在的 max-content 栅格每帧重排，整行读数跟着抖。 */
 export function AnimatedNumber({ value, format }: AnimatedNumberProps) {
   const mv = useMotionValue(0)
   const spring = useSpring(mv, { stiffness: 88, damping: 24, mass: 0.7 })
@@ -21,5 +25,9 @@ export function AnimatedNumber({ value, format }: AnimatedNumberProps) {
     mv.set(value)
   }, [mv, value])
 
-  return <motion.span>{text}</motion.span>
+  return (
+    <span className="animated-number" data-reserve={format(value)}>
+      <motion.span>{text}</motion.span>
+    </span>
+  )
 }
