@@ -13,8 +13,14 @@ enum TokenFormatter {
     }
 
     /// 实时吞吐数值部分,对应 Web 端 `compactCN(Math.round(tps))` + " tok/s"。
+    ///
+    /// WS 数据异常(NaN/∞/超大值)时 `Int64(Double)` 会直接 trap,菜单栏 App 不能
+    /// 因为一条脏推送就崩,统一退回 0。
     static func compactSpeed(_ tokensPerSec: Double) -> String {
-        compact(Int64(tokensPerSec.rounded()))
+        guard tokensPerSec.isFinite else { return "0" }
+        let rounded = tokensPerSec.rounded()
+        guard rounded < Double(Int64.max), rounded > Double(Int64.min) else { return "0" }
+        return compact(Int64(rounded))
     }
 
     /// 耗时(Web duration()):<1000ms → 取整 ms;否则保留 2 位小数的秒。

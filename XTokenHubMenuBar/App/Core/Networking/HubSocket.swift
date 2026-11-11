@@ -79,6 +79,8 @@ final class HubSocket: @unchecked Sendable {
                 let message = try await task.receive()
                 handleMessage(message)
             } catch {
+                // 主动 teardown(切来源/重连/退出)也会让 receive 抛错,不能当成断线再排一次重连。
+                guard !Task.isCancelled else { return }
                 scheduleReconnect("连接中断:\(shortError(error))")
                 return
             }
@@ -113,6 +115,8 @@ final class HubSocket: @unchecked Sendable {
         do {
             try await task.send(.string(#"{"type":"ping"}"#))
         } catch {
+            // 心跳循环被主动取消时,发送失败不代表链路断了。
+            guard !Task.isCancelled else { return }
             scheduleReconnect("发送心跳失败:\(shortError(error))")
         }
     }

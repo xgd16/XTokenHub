@@ -46,7 +46,6 @@ struct FloatingBarContent: View {
             Button("恢复浮窗默认位置", systemImage: "arrow.uturn.backward") { onResetPosition() }
             Button("隐藏悬浮窗", systemImage: "eye.slash") { onHide() }
         }
-        .help("单击打开/收起完整面板 · 拖动移动位置 · 右键更多")
     }
 
     /// 状态点 + 指标串:整块叠 `WindowDragHandle`,拖动移动、单击切换面板。
@@ -61,6 +60,7 @@ struct FloatingBarContent: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             } else {
                 Text(parts.joined(separator: " · "))
                     .font(.system(size: 11, weight: .medium, design: .monospaced))

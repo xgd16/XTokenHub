@@ -1,54 +1,65 @@
 import AppKit
 
-/// 可靠地打开 SwiftUI 的 Settings 场景。
+/// 打开设置窗口。
 ///
-/// `MenuBarExtra` 面板是临时窗口:点击时 App 处于非激活态,面板又随焦点转移关闭,
-/// 直接调用 `openSettings` 可能被吞掉,或窗口打开后未置前(表现为「点不开」)。
-///
-/// 浮窗里的按钮不在 SwiftUI 场景内(`NSHostingView`),拿不到 `openSettings` action,
-/// 改走 AppKit 的 `showSettingsWindow:` selector(macOS 14+ SwiftUI 实现,
-/// 旧的 `showPreferencesWindow:` 已不存在);菜单栏面板内仍优先用环境 action。
+/// 不走 SwiftUI 的 `Settings` 场景:菜单栏 App 常处非激活态,`showSettingsWindow:`
+/// 依赖场景与激活时序,经常被吞掉(表现为「点设置没反应」)。这里用 AppKit 自建
+/// 普通 `NSWindow` 承载 `SettingsView`,直接 `makeKeyAndOrderFront` 就能出现。
 @MainActor
 enum AppSettingsWindow {
-    private static let windowIdentifier = "com_apple_SwiftUI_Settings_window"
+    private static let windowAutosaveName = "XTokenHubSettingsWindow"
 
-    private static func find() -> NSWindow? {
-        NSApp.windows.first {
-            $0.identifier?.rawValue == windowIdentifier
-                || $0.frameAutosaveName == windowIdentifier
-        }
-    }
+    /// 由 AppDelegate 注入:用当前 store/settings 构建设置页。
+    static var makeContent: (() -> NSView)?
 
-    /// - Parameter fallback: SwiftUI 环境里的 `openSettings`(仅菜单栏面板内可用)。
-    static func open(fallback: (() -> Void)? = nil) {
+    private static var settingsWindow: NSWindow?
+
+    static func open() {
         NSApp.activate(ignoringOtherApps: true)
-        if let existing = find() {
-            existing.makeKeyAndOrderFront(nil)
+        if let settingsWindow {
+            settingsWindow.makeKeyAndOrderFront(nil)
             return
         }
-
-        if let fallback {
-            fallback()
-        } else {
-            sendShowSettings()
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            NSApp.activate(ignoringOtherApps: true)
-            if let window = find() {
-                window.makeKeyAndOrderFront(nil)
-            } else {
-                // 时序兜底:action 没有落地时再走一次 AppKit selector。
-                sendShowSettings()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    NSApp.activate(ignoringOtherApps: true)
-                    find()?.makeKeyAndOrderFront(nil)
-                }
-            }
-        }
+        guard let makeContent else { return }
+        show(makeContent())
     }
 
-    private static func sendShowSettings() {
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    private static func show(_ content: NSView) {
+        // 先在 440pt 宽下量理想高度(与系统设置窗口的默认宽度一致)。
+        content.setFrameSize(NSSize(width: 440, height: 0))
+        content.layoutSubtreeIfNeeded()
+        var size = content.fittingSize
+        if size.width < 1 || size.height < 1 {
+            size = NSSize(width: 440, height: 640)
+        }
+        // 内容比屏幕高时窗口夹到可用区,Form 自身可滚动。
+        let maxHeight = (NSScreen.main?.visibleFrame.height ?? 900) - 80
+        size.height = min(max(size.height, 240), maxHeight)
+        size.width = max(size.width, 440)
+
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "设置"
+        window.contentView = content
+        window.isReleasedWhenClosed = false
+        window.setFrameAutosaveName(windowAutosaveName)
+        // `setFrameAutosaveName` 只注册名字(返回值是「名字是否设置成功」,不是「是否有旧位置」),
+        // 必须显式 `setFrameUsingName` 才真正恢复;没有历史位置时居中,别停在 (0,0)
+        // 被屏幕夹到左下角。恢复的位置也要夹回可见区(换显示器后可能出屏)。
+        if window.setFrameUsingName(windowAutosaveName) {
+            let frames = NSScreen.screens.map(\.visibleFrame)
+            window.setFrame(
+                FloatingPlacement.clampedFrame(window.frame, visibleFrames: frames),
+                display: false
+            )
+        } else {
+            window.center()
+        }
+        window.makeKeyAndOrderFront(nil)
+        settingsWindow = window
     }
 }

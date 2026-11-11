@@ -233,6 +233,20 @@ struct SurfaceMetricsTests {
         #expect(host.fittingSize.width > 300, "窄宿主下条状宽度只有 \(host.fittingSize.width)pt")
     }
 
+    /// 量尺寸时会把宿主临时放宽到探测宽度,量完必须还原。
+    /// 不还原的话,SwiftUI 会把固定宽度的内容居中到 1200pt 里,窗口只截到左侧空白 ——
+    /// 表现就是「切换样式后窗口还在,但什么都显示不出来」。
+    @Test func fittingSizeRestoresHostFrame() {
+        let host = NSHostingView(rootView: barView(parts: SurfaceMetrics.parts(fullSnapshot(), metrics: allMetrics)))
+        let original = NSSize(width: 260, height: 200)
+        host.setFrameSize(original)
+        host.layoutSubtreeIfNeeded()
+
+        _ = FloatingSizing.fittingSize(of: host)
+
+        #expect(host.frame.size == original)
+    }
+
     /// 反向回归:宿主还是旧卡片的窄宽度时反复量,宽度不能收敛到截断值(越量越短)。
     @Test func barWidthIsStableAcrossRepeatedMeasurements() {
         let host = NSHostingView(rootView: barView(parts: SurfaceMetrics.parts(fullSnapshot(), metrics: allMetrics)))

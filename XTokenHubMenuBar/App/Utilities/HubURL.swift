@@ -17,12 +17,18 @@ enum HubURL {
         return url
     }
 
-    /// http → ws、https → wss,追加管理端推送路径 /api/v1/ws。
+    /// http → ws、https → wss,保留基址路径后追加管理端推送路径 /api/v1/ws。
+    ///
+    /// REST 端走 `baseURL.appending(path: "api/v1/...")`,会保留反代子路径
+    /// (`https://host/xtokenhub`);WS 同理,不能把 `/xtokenhub` 丢掉,否则
+    /// 子路径部署下 REST 正常、实时流永远连不上。
     static func wsBase(_ http: URL) -> URL {
         let scheme = http.scheme?.lowercased() == "https" ? "wss" : "ws"
+        var path = http.path
+        while path.hasSuffix("/") { path.removeLast() }
         var s = "\(scheme)://\(http.host ?? "127.0.0.1")"
         if let port = http.port { s += ":\(port)" }
-        s += "/api/v1/ws"
+        s += path + "/api/v1/ws"
         return URL(string: s) ?? fallback
     }
 }

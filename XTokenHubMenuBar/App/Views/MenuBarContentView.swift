@@ -7,7 +7,6 @@ import SwiftUI
 struct MenuBarContentView: View {
     @Environment(HubStore.self) private var store
     @Environment(AppSettings.self) private var settings
-    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -428,7 +427,7 @@ struct MenuBarContentView: View {
 
     /// 与浮窗右键菜单共用同一套唤起逻辑(见 `AppSettingsWindow`)。
     private func openSettingsReliably() {
-        AppSettingsWindow.open(fallback: { openSettings() })
+        AppSettingsWindow.open()
     }
 
     // MARK: - 状态文案

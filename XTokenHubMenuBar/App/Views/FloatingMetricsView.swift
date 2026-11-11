@@ -17,6 +17,8 @@ struct FloatingMetricsView: View {
     let onToggleDashboard: () -> Void
     /// 右键菜单「打开完整面板」:总是打开/置前(不因已打开而收起)。
     let onOpenDashboard: () -> Void
+    /// 条状内容宽度随数据变化(吞吐/花费位数)时,请控制器重新量窗口尺寸。
+    let onNeedsRefit: () -> Void
 
     var body: some View {
         if settings.floatingMetrics.contains(.peakStatus) {
@@ -46,9 +48,10 @@ struct FloatingMetricsView: View {
                 onHide: { settings.setFloatingWindowVisible(false) }
             )
         case .bar:
+            let parts = SurfaceMetrics.parts(snapshot, metrics: settings.floatingMetrics)
             FloatingBarContent(
                 snapshot: snapshot,
-                parts: SurfaceMetrics.parts(snapshot, metrics: settings.floatingMetrics),
+                parts: parts,
                 style: settings.floatingStyle,
                 onToggleDashboard: onToggleDashboard,
                 onOpenDashboard: onOpenDashboard,
@@ -57,12 +60,21 @@ struct FloatingMetricsView: View {
                 onResetPosition: { settings.onResetFloatingPosition?() },
                 onHide: { settings.setFloatingWindowVisible(false) }
             )
+            // 条状窗口宽度由内容决定:数字位数一变(吞吐 9→1234、花费 $1.2→$12.345、
+            // 峰谷/活跃流标签出现消失)就要重新量窗口,否则更长的末位指标会被裁掉。
+            .onChange(of: parts) { _, _ in onNeedsRefit() }
+            .onChange(of: snapshot.activeStreams) { _, _ in onNeedsRefit() }
         }
     }
 
     /// 右键菜单:在统计卡与条状之间切换(设置页也有同一个选项)。
     private func toggleStyle() {
-        settings.floatingStyle = settings.floatingStyle == .card ? .bar : .card
+        let next: AppSettings.FloatingStyle = settings.floatingStyle == .card ? .bar : .card
+        // 菜单还在跟踪时整棵视图树会被替换,旧菜单的锚点跟着消失,macOS 上会留下一个
+        // 内容不再重绘的空窗口。等菜单收起后的下一轮 runloop 再切换。
+        DispatchQueue.main.async {
+            settings.floatingStyle = next
+        }
     }
 }
 
@@ -113,7 +125,6 @@ struct FloatingCardContent: View {
             Button("恢复浮窗默认位置", systemImage: "arrow.uturn.backward") { onResetPosition() }
             Button("隐藏悬浮窗", systemImage: "eye.slash") { onHide() }
         }
-        .help("单击打开/收起完整面板 · 拖动移动位置 · 右键更多")
     }
 
     private var header: some View {
@@ -163,7 +174,6 @@ struct WindowDragHandle: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = DragView()
         view.onTap = onTap
-        view.toolTip = "拖动移动浮窗 · 单击打开/收起完整面板"
         return view
     }
 
@@ -173,6 +183,9 @@ struct WindowDragHandle: NSViewRepresentable {
 
     private final class DragView: NSView {
         var onTap: (() -> Void)?
+
+        /// 非激活态下的第一下点击也要能拖动/切换面板(菜单栏 App 几乎总是非激活态)。
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
         override func mouseDown(with event: NSEvent) {
             let before = window?.frame.origin

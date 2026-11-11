@@ -209,6 +209,14 @@ struct TokenFormatterTests {
         #expect(TokenFormatter.compactSpeed(1234.6) == "1235")
     }
 
+    /// 脏推送不能把菜单栏 App 打崩:NaN/∞/超出 Int64 的值统一退回 0。
+    @Test func compactSpeedToleratesNonFinite() {
+        #expect(TokenFormatter.compactSpeed(.nan) == "0")
+        #expect(TokenFormatter.compactSpeed(.infinity) == "0")
+        #expect(TokenFormatter.compactSpeed(-.infinity) == "0")
+        #expect(TokenFormatter.compactSpeed(1e30) == "0")
+    }
+
     /// 对应 Web 端 duration():<1s 显示 ms,否则 2 位小数的秒。
     @Test func duration() {
         #expect(TokenFormatter.duration(780) == "780ms")
@@ -325,6 +333,15 @@ struct HubURLTests {
     @Test func buildsWsURL() {
         #expect(HubURL.wsBase(URL(string: "http://127.0.0.1:9192")!).absoluteString == "ws://127.0.0.1:9192/api/v1/ws")
         #expect(HubURL.wsBase(URL(string: "https://hub.example.com")!).absoluteString == "wss://hub.example.com/api/v1/ws")
+        #expect(HubURL.wsBase(URL(string: "http://127.0.0.1:9192/")!).absoluteString == "ws://127.0.0.1:9192/api/v1/ws")
+    }
+
+    /// REST 走 baseURL.appending(path:),反代子路径会被保留;WS 也必须保留,否则子路径部署连不上。
+    @Test func wsURLKeepsBasePathPrefix() {
+        #expect(HubURL.wsBase(URL(string: "https://hub.example.com/xtokenhub")!).absoluteString
+            == "wss://hub.example.com/xtokenhub/api/v1/ws")
+        #expect(HubURL.wsBase(URL(string: "https://hub.example.com/xtokenhub/")!).absoluteString
+            == "wss://hub.example.com/xtokenhub/api/v1/ws")
     }
 }
 

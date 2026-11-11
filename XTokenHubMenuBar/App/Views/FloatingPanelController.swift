@@ -15,6 +15,11 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     private var dashboardPanel: NSPanel?
     /// 上一次「完整面板因失焦自动收起」的时刻(见 toggleDashboard)。
     private var lastAutoHideAt: Date?
+    private var screenObserver: NSObjectProtocol?
+    /// 上一次量尺寸时的形态;切换形态后 SwiftUI 的布局要跨轮次才落地,需要多量一次。
+    private var lastFittedStyle: AppSettings.FloatingStyle?
+    /// 条状内容宽度变化后的重新量尺寸任务(80ms 去抖,吞吐 2Hz 更新时不至于每帧都量)。
+    private var refitWorkItem: DispatchWorkItem?
 
     /// AppKit 的窗口位置记忆键(实际 defaults 键为 `NSWindow Frame <name>`)。
     static let frameAutosaveName = "XTokenHubFloatingWindow"
@@ -27,6 +32,19 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         buildPanel()
         settings.onFloatingChange = { [weak self] in self?.applySettings() }
         settings.onResetFloatingPosition = { [weak self] in self?.resetPosition() }
+        // 换显示器/改分辨率后,浮窗可能落在新屏幕布局之外 —— 重新量尺寸并夹回可见区。
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.settings.showFloatingWindow else { return }
+                self.resizeToFit()
+                self.clampToVisibleScreen()
+                self.panel.orderFrontRegardless()
+            }
+        }
         applySettings()
     }
 
@@ -35,11 +53,12 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     private func buildPanel() {
         let root = FloatingMetricsView(
             onToggleDashboard: { [weak self] in self?.toggleDashboard() },
-            onOpenDashboard: { [weak self] in self?.showDashboard() }
+            onOpenDashboard: { [weak self] in self?.showDashboard() },
+            onNeedsRefit: { [weak self] in self?.scheduleRefit() }
         )
         .environment(store)
         .environment(settings)
-        let hosting = NSHostingView(rootView: root)
+        let hosting = FirstMouseHostingView(rootView: root)
         hosting.frame = NSRect(x: 0, y: 0, width: 264, height: 200)
         hosting.wantsLayer = true
         hosting.layer?.backgroundColor = NSColor.clear.cgColor
@@ -79,6 +98,15 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
             FloatingPlacement.resizedFramePreservingTopLeft(panel.frame, size: size),
             display: true
         )
+        // contentView 是手动 setFrame 过的 NSHostingView:量尺寸阶段会临时放宽到探测宽度,
+        // 必须显式同步回窗口内容尺寸。否则 SwiftUI 把固定宽度的卡片居中到探测宽度里,
+        // 窗口只截到左侧空白 —— 表现就是「窗口还在,但什么都显示不出来」。
+        hostingView.frame = NSRect(
+            origin: .zero,
+            size: panel.contentRect(forFrameRect: panel.frame).size
+        )
+        hostingView.needsLayout = true
+        hostingView.needsDisplay = true
     }
 
     private func fittingSize() -> NSSize {
@@ -131,6 +159,8 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
 
     private func applySettings() {
         if settings.showFloatingWindow {
+            let styleChanged = lastFittedStyle != settings.floatingStyle
+            lastFittedStyle = settings.floatingStyle
             resizeToFit()
             clampToVisibleScreen()
             panel.orderFrontRegardless()
@@ -140,10 +170,51 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
                 self.resizeToFit()
                 self.clampToVisibleScreen()
             }
+            // 形态切换是整棵视图树替换(SwiftUI 的布局可能跨两轮),再兜底量一次,
+            // 不然窗口会停在旧形态的尺寸上:条状变统计卡时高度不够,内容会被裁掉。
+            if styleChanged {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    guard let self else { return }
+                    self.resizeToFit()
+                    self.clampToVisibleScreen()
+                }
+            }
         } else {
             panel.orderOut(nil)
             hideDashboard()
         }
+    }
+
+    /// 条状内容(数字位数/活跃流标签)变化后重新量窗口宽度。
+    ///
+    /// 窗口宽度只在设置变化时量一次是不够的:吞吐每 2 秒推一次,`9/s → 1234/s`、
+    /// 花费 `$1.2 → $12.345` 都会让文本变长,停在旧宽度上就会把末位指标裁掉。
+    /// 去抖后再量,且尺寸没变就不动窗口。
+    private func scheduleRefit() {
+        guard settings.showFloatingWindow, settings.floatingStyle == .bar else { return }
+        refitWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.refitWorkItem = nil
+            self.refitIfNeeded()
+        }
+        refitWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: item)
+    }
+
+    private func refitIfNeeded() {
+        guard settings.showFloatingWindow else { return }
+        let size = fittingSize()
+        let current = panel.contentRect(forFrameRect: panel.frame).size
+        guard size != current else { return }
+        panel.setFrame(
+            FloatingPlacement.resizedFramePreservingTopLeft(panel.frame, size: size),
+            display: true
+        )
+        hostingView.frame = NSRect(origin: .zero, size: size)
+        hostingView.needsLayout = true
+        hostingView.needsDisplay = true
+        clampToVisibleScreen()
     }
 
     /// 设置页「恢复浮窗默认位置」。
@@ -189,7 +260,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         let root = MenuBarContentView()
             .environment(store)
             .environment(settings)
-        let hosting = NSHostingView(rootView: root)
+        let hosting = FirstMouseHostingView(rootView: root)
         // 先给一个目标宽度再量理想高度(与 WidgetLayoutTests 的离屏量法一致)。
         hosting.setFrameSize(NSSize(width: 400, height: 0))
         hosting.layoutSubtreeIfNeeded()
@@ -266,6 +337,15 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     }
 }
 
+/// 悬浮窗/完整面板的 SwiftUI 宿主:接受「首次点击」。
+///
+/// 菜单栏 App 常处非激活态,`NSView` 默认 `acceptsFirstMouse == false` —— 第一下点击
+/// 只会让窗口成为 key,不会交给内容视图,表现就是「点浮窗没反应,得点第二下」。
+/// 浮窗是常驻的被动面板,必须一次点中。
+private final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 /// 悬浮窗口:点击不激活宿主 App(配合 `.nonactivatingPanel`),但不抢主窗口身份。
 private final class FloatingPanel: NSPanel {
     override var canBecomeKey: Bool { true }
@@ -292,10 +372,20 @@ private final class DashboardPanel: NSPanel {
 /// SwiftUI 会把单行文本压缩并回报截断后的宽度,窗口就永远长不大;
 /// 先放宽到探测宽度再取 `fittingSize`,固定宽度的统计卡不受影响。
 enum FloatingSizing {
+    /// 量内容的理想尺寸。
+    ///
+    /// 探测期间会把宿主放宽到 `probeWidth`,否则宿主还停在旧窗口(可能只有卡片宽度)时,
+    /// 单行文本会被压缩并回报截断宽度,条状窗口就会越量越窄。量完**必须还原原始尺寸**:
+    /// 这个宿主就是窗口的 contentView,留在探测宽度上会让 SwiftUI 把固定宽度的内容
+    /// 水平居中到 1200pt 的中间,窗口只截到左侧空白(看起来什么都没有)。
     static func fittingSize(of view: NSView, probeWidth: CGFloat = 1200) -> NSSize {
-        view.setFrameSize(NSSize(width: probeWidth, height: max(view.frame.height, 1)))
+        let original = view.frame
+        view.setFrameSize(NSSize(width: probeWidth, height: max(original.height, 1)))
         view.layoutSubtreeIfNeeded()
-        return view.fittingSize
+        let size = view.fittingSize
+        view.setFrameSize(original.size)
+        view.layoutSubtreeIfNeeded()
+        return size
     }
 }
 

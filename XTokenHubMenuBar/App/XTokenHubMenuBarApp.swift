@@ -14,12 +14,8 @@ struct XTokenHubMenuBarApp: App {
             MenuBarLabel(store: appDelegate.store, settings: appDelegate.settings)
         }
         .menuBarExtraStyle(.window)
-
-        Settings {
-            SettingsView()
-                .environment(appDelegate.store)
-                .environment(appDelegate.settings)
-        }
+        // 不再声明 SwiftUI `Settings` 场景:它的窗口依赖 App 激活态,菜单栏 App 里
+        // `showSettingsWindow:` 常被吞掉;统一走 `AppSettingsWindow` 的自建窗口。
     }
 
     /// 菜单栏项显隐:设置页与浮窗右键菜单都走同一对守卫方法,
@@ -45,6 +41,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UNUserNotificationCenter.current().delegate = self
         settings.onPeakNotifyChange = { [weak self] enabled in
             Task { @MainActor in await self?.store.handlePeakNotifyChange(enabled) }
+        }
+        // 设置页用自建窗口承载:浮窗/面板都跑在普通 NSHostingView 里,SwiftUI 的
+        // Settings 场景在非激活态下唤不起来(点「设置…」没反应),自建窗口不依赖激活时序。
+        let store = store
+        let settings = settings
+        AppSettingsWindow.makeContent = {
+            NSHostingView(
+                rootView: SettingsView()
+                    .environment(store)
+                    .environment(settings)
+            )
         }
         floatingController = FloatingPanelController(store: store, settings: settings)
         store.start(with: settings)

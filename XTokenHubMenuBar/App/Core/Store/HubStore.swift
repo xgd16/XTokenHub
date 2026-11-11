@@ -71,6 +71,8 @@ final class HubStore {
     private var socket: HubSocket?
     private var settings: AppSettings?
     private var activeBase: URL?
+    /// 数据来源代际:切来源时 +1,在途请求返回后据此丢弃旧来源的结果(避免串台)。
+    private var apiGeneration = 0
     private var started = false
     private var rebuildTask: Task<Void, Never>?
     private var statsRefreshTask: Task<Void, Never>?
@@ -150,6 +152,7 @@ final class HubStore {
         guard base != activeBase else { return }
         activeBase = base
         api = APIClient(baseURL: base)
+        apiGeneration += 1
 
         // 切换来源:清空上一个服务的统计数据,避免串台
         summary = nil
@@ -169,12 +172,18 @@ final class HubStore {
         WidgetDataProvider.reloadWidgets()
 
         socket?.disconnect()
+        let generation = apiGeneration
         let sock = HubSocket(url: HubURL.wsBase(base))
-        sock.onEvent = { [weak self] event in self?.handleEvent(event) }
+        // 旧 socket 在切换后可能还有排队的事件/连接回调,按代际丢弃。
+        sock.onEvent = { [weak self] event in
+            guard let self, generation == self.apiGeneration else { return }
+            self.handleEvent(event)
+        }
         sock.onConnected = { [weak self] in
-            self?.connection = .connected
-            self?.lastErrorMessage = nil
-            Task { await self?.refreshAll() }
+            guard let self, generation == self.apiGeneration else { return }
+            self.connection = .connected
+            self.lastErrorMessage = nil
+            Task { await self.refreshAll() }
         }
         socket = sock
 
@@ -264,36 +273,48 @@ final class HubStore {
 
     private func refreshQuick() async {
         guard let api else { return }
+        let generation = apiGeneration
         let midnight = Calendar.current.startOfDay(for: Date())
         do {
             async let summaryTask = api.summary(since: midnight)
             async let modelTask = api.modelTop(since: midnight)
             let (s, m) = try await (summaryTask, modelTask)
+            guard generation == apiGeneration else { return }
             summary = s
             modelTop = Array(m.prefix(5))
             lastErrorMessage = nil
         } catch {
+            guard generation == apiGeneration else { return }
             lastErrorMessage = error.localizedDescription
         }
         // 花费是可选增强:接口缺失(旧后端)时不能拖垮核心汇总
-        costToday = try? await api.costForecast(period: "today")
+        if let cost = try? await api.costForecast(period: "today") {
+            guard generation == apiGeneration else { return }
+            costToday = cost
+        }
         await fetchTrend()
 
-        // 同步数据到 Widget
+        // 同步数据到 Widget(来源已切的旧结果不推给小组件)
+        guard generation == apiGeneration else { return }
         syncWidgetData()
     }
 
     /// 按当前选择的范围拉取趋势。
     private func fetchTrend() async {
         guard let api else { return }
+        let generation = apiGeneration
         do {
+            let points: [TrendPoint]
             switch trendRange {
-            case .live: trend = try await api.trend(hours: 1, bucket: "minute")
-            case .day: trend = try await api.trend(hours: 24, bucket: "hour")
-            case .week: trend = try await api.trend(days: 7)
-            case .month: trend = try await api.trend(days: 30)
+            case .live: points = try await api.trend(hours: 1, bucket: "minute")
+            case .day: points = try await api.trend(hours: 24, bucket: "hour")
+            case .week: points = try await api.trend(days: 7)
+            case .month: points = try await api.trend(days: 30)
             }
+            guard generation == apiGeneration else { return }
+            trend = points
         } catch {
+            guard generation == apiGeneration else { return }
             lastErrorMessage = error.localizedDescription
         }
     }
@@ -301,9 +322,13 @@ final class HubStore {
     /// 调用方 TOP · 30 天(慢速数据)。
     private func fetchCallers() async {
         guard let api else { return }
+        let generation = apiGeneration
         do {
-            callersTop = Array(try await api.keyTop(hours: 720).prefix(5))
+            let top = Array(try await api.keyTop(hours: 720).prefix(5))
+            guard generation == apiGeneration else { return }
+            callersTop = top
         } catch {
+            guard generation == apiGeneration else { return }
             lastErrorMessage = error.localizedDescription
         }
     }
@@ -311,7 +336,9 @@ final class HubStore {
     /// 渠道列表:失败静默(旧后端无此端点时面板显示空态,不打扰其余数据)。
     private func fetchChannels() async {
         guard let api else { return }
+        let generation = apiGeneration
         if let list = try? await api.channels() {
+            guard generation == apiGeneration else { return }
             channels = list
         }
     }
@@ -319,26 +346,36 @@ final class HubStore {
     /// 渠道余额:失败静默并保留上次已知值,不打扰主列表。
     private func fetchBalances() async {
         guard let api else { return }
+        let generation = apiGeneration
         guard let list = try? await api.channelBalances() else { return }
+        guard generation == apiGeneration else { return }
         balances = Dictionary(uniqueKeysWithValues: list.items.map { ($0.channelID, $0) })
     }
 
     /// 计费设置:决定金额展示币种与汇率,失败时回退 USD。
     private func fetchBilling() async {
         guard let api else { return }
-        billing = try? await api.billing()
+        let generation = apiGeneration
+        let value = try? await api.billing()
+        guard generation == apiGeneration else { return }
+        billing = value
     }
 
     /// 本月花费与预测(慢速数据,随重连/手动刷新走)。
     private func fetchCostMonth() async {
         guard let api else { return }
-        costMonth = try? await api.costForecast(period: "month")
+        let generation = apiGeneration
+        let value = try? await api.costForecast(period: "month")
+        guard generation == apiGeneration else { return }
+        costMonth = value
     }
 
     /// 峰谷价目:只保留规则可解析的行;失败静默(旧后端无此数据,不拖垮核心统计)。
     private func fetchPeakPrices() async {
         guard let api else { return }
+        let generation = apiGeneration
         guard let list = try? await api.peakPrices() else { return }
+        guard generation == apiGeneration else { return }
         peakPrices = list.filter { $0.peakRule != nil }
         if settings?.peakNotifyEnabled == true {
             await peakNotifier.reschedule(peakPrices, calendar: holidayCalendar)
@@ -352,6 +389,7 @@ final class HubStore {
     /// 并持久化到本地,离线重启也能判对。
     private func fetchHolidays() async {
         guard let api else { return }
+        let generation = apiGeneration
         var merged = holidayCalendar
         var fetchedAny = false
         for year in HolidayCalendar.years(coveringHorizonDays: HolidayCalendar.horizonDays) {
@@ -361,7 +399,7 @@ final class HubStore {
             merged = HolidayCalendar(kinds: kept).merging(HolidayCalendar(items: items))
             fetchedAny = true
         }
-        guard fetchedAny else { return }
+        guard fetchedAny, generation == apiGeneration else { return }
         holidayCalendar = merged
         HolidaySourceStore.shared.install(merged)
         saveHolidayCache(merged)
@@ -408,6 +446,7 @@ final class HubStore {
 
     private func refreshAll() async {
         guard let api else { return }
+        let generation = apiGeneration
         // 计费设置先行：花费的展示币种/汇率依赖它，也让随后的 Widget 同步带上正确币种
         await fetchBilling()
         // 年历先行：峰谷判定与切换点依赖它
@@ -417,9 +456,11 @@ final class HubStore {
             async let lifetimeTask = api.lifetime()
             async let logsTask = api.logs(perPage: 30)
             let (lt, lg) = try await (lifetimeTask, logsTask)
+            guard generation == apiGeneration else { return }
             lifetime = lt
             recentRequests = lg.items
         } catch {
+            guard generation == apiGeneration else { return }
             lastErrorMessage = error.localizedDescription
         }
         await fetchCallers()
@@ -428,6 +469,7 @@ final class HubStore {
         await fetchBalances()
         await fetchPeakPrices()
         // 慢速数据（余额等）齐了再同步一次，避免 Widget 拿到残缺载荷
+        guard generation == apiGeneration else { return }
         syncWidgetData()
     }
 
