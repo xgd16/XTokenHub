@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { compactCN } from '../utils/format'
 import type { DonutSlice } from '../utils/transform'
-import { useChartPalette } from '../theme'
+import { useChartPalette, type ChartPalette } from '../theme'
+import EChart, { type EChartEventHandler } from '../charts/EChart'
+import { type EChartsCoreOption, type EChartsType } from '../charts/echarts'
 
 interface Props {
   slices: DonutSlice[]
@@ -10,15 +12,91 @@ interface Props {
   loading?: boolean
 }
 
-/** 环图（纯 SVG stroke-dasharray 实现）+ 右侧图例：悬浮扇区加粗、中心切换占比、图例同步高亮。 */
+/** 环图内/外径占半径的比例：对应原 SVG r=70 / stroke=26（57~83）。 */
+const RADIUS: [string, string] = ['57%', '83%']
+const MAIN_SERIES = 1
+
+function buildOption(slices: DonutSlice[], pal: ChartPalette): EChartsCoreOption {
+  return {
+    tooltip: { show: false },
+    // 首次不播放入场动画（原实现是静态环），数据更新仍保留 500ms 过渡。
+    animationDuration: 0,
+    animationDurationUpdate: 500,
+    series: [
+      {
+        type: 'pie',
+        radius: RADIUS,
+        center: ['50%', '50%'],
+        silent: true,
+        label: { show: false },
+        labelLine: { show: false },
+        emphasis: { disabled: true },
+        data: [{ value: 1, itemStyle: { color: pal.track } }],
+      },
+      {
+        type: 'pie',
+        radius: RADIUS,
+        center: ['50%', '50%'],
+        startAngle: 90,
+        clockwise: true,
+        avoidLabelOverlap: false,
+        selectedMode: false,
+        label: { show: false },
+        labelLine: { show: false },
+        itemStyle: { borderWidth: 0 },
+        emphasis: { scale: true, scaleSize: 6, focus: 'self' },
+        blur: { itemStyle: { opacity: 0.35 } },
+        data: slices.map((s) => ({
+          name: s.name,
+          value: s.value,
+          itemStyle: { color: s.color },
+        })),
+      },
+    ],
+  }
+}
+
+/** 环图（ECharts pie）+ 右侧图例：悬浮扇区加粗、中心切换占比、图例同步高亮。 */
 export default function ModelDonut({ slices, total, size = 220, loading = false }: Props) {
   const pal = useChartPalette()
+  const chartRef = useRef<EChartsType | null>(null)
   const [hover, setHover] = useState<string | null>(null)
-  const R = 70
-  const C = 2 * Math.PI * R
+  const option = useMemo(() => buildOption(slices, pal), [slices, pal])
+  const hovered = slices.find((s) => s.name === hover)
+
+  const onReady = useCallback((chart: EChartsType) => {
+    chartRef.current = chart
+  }, [])
+
+  const events = useMemo<Record<string, EChartEventHandler>>(
+    () => ({
+      mouseover: (params: any) => {
+        if (params.seriesIndex === MAIN_SERIES && typeof params.name === 'string') {
+          setHover(params.name)
+        }
+      },
+      globalout: () => setHover(null),
+    }),
+    [],
+  )
+
+  /** 图例悬停：同步中心读数 + 用 dispatchAction 让扇区高亮/其余变淡。 */
+  const highlight = (name: string | null) => {
+    setHover(name)
+    const chart = chartRef.current
+    if (!chart) return
+    chart.dispatchAction({ type: 'downplay', seriesIndex: MAIN_SERIES })
+    if (!name) return
+    const dataIndex = slices.findIndex((s) => s.name === name)
+    if (dataIndex >= 0) {
+      chart.dispatchAction({ type: 'highlight', seriesIndex: MAIN_SERIES, dataIndex })
+    }
+  }
 
   // 加载中且无数据时显示骨架
   if (loading && slices.length === 0) {
+    const R = 70
+    const C = 2 * Math.PI * R
     return (
       <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
         <div style={{ position: 'relative', width: size, height: size, flexShrink: 0, margin: '0 auto' }}>
@@ -40,50 +118,18 @@ export default function ModelDonut({ slices, total, size = 220, loading = false 
       </div>
     )
   }
-  let acc = 0
-  const arcs = slices.map((s) => {
-    const frac = total > 0 ? s.value / total : 0
-    const arc = { ...s, dash: frac * C, offset: -acc * C }
-    acc += frac
-    return arc
-  })
-  const hovered = arcs.find((a) => a.name === hover)
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
       <div style={{ position: 'relative', width: size, height: size, flexShrink: 0, margin: '0 auto' }}>
-        <svg
-          viewBox="0 0 200 200"
+        <EChart
+          option={option}
           width={size}
           height={size}
-          role="img"
-          aria-label="模型用量占比"
-          onMouseLeave={() => setHover(null)}
-        >
-          {/* 底环 */}
-          <circle cx="100" cy="100" r={R} fill="none" stroke={pal.track} strokeWidth="26" />
-          <g transform="rotate(-90 100 100)">
-            {arcs.map((a) => {
-              const active = hover === a.name
-              return (
-                <circle
-                  key={a.name}
-                  cx="100"
-                  cy="100"
-                  r={R}
-                  fill="none"
-                  stroke={a.color}
-                  strokeWidth={active ? 32 : 26}
-                  strokeDasharray={`${a.dash} ${C - a.dash}`}
-                  strokeDashoffset={a.offset}
-                  opacity={hover && !active ? 0.35 : 1}
-                  style={{ cursor: 'pointer', transition: 'stroke-dasharray 0.5s ease, stroke-dashoffset 0.5s ease, stroke-width 0.15s ease, opacity 0.15s ease' }}
-                  onMouseEnter={() => setHover(a.name)}
-                />
-              )
-            })}
-          </g>
-        </svg>
+          ariaLabel="模型用量占比"
+          events={events}
+          onReady={onReady}
+        />
         <div
           style={{
             position: 'absolute',
@@ -114,11 +160,11 @@ export default function ModelDonut({ slices, total, size = 220, loading = false 
       </div>
 
       <div style={{ flex: 1, minWidth: 240 }}>
-        {arcs.map((s) => (
+        {slices.map((s) => (
           <div
             key={s.name}
-            onMouseEnter={() => setHover(s.name)}
-            onMouseLeave={() => setHover(null)}
+            onMouseEnter={() => highlight(s.name)}
+            onMouseLeave={() => highlight(null)}
             style={{
               display: 'flex',
               alignItems: 'center',

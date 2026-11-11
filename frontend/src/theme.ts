@@ -101,6 +101,8 @@ export interface ChartPalette {
   amber: string
   /** 派生关系用紫。 */
   violet: string
+  /** tooltip 正文（与 --text-primary 同值）。 */
+  textPrimary: string
   textSecondary: string
   textFaint: string
   grid: string
@@ -124,6 +126,7 @@ const DARK_PALETTE: ChartPalette = {
   coral: '#ef6b6b',
   amber: '#ffc46b',
   violet: '#9c7be8',
+  textPrimary: '#e6edf3',
   textSecondary: '#8b98a9',
   textFaint: '#5a6675',
   grid: 'rgba(94, 128, 148, 0.16)',
@@ -143,6 +146,7 @@ const LIGHT_PALETTE: ChartPalette = {
   coral: '#d9504f',
   amber: '#b0720d',
   violet: '#7048c4',
+  textPrimary: '#1a2530',
   textSecondary: '#5a6a7a',
   textFaint: '#8b98a6',
   grid: 'rgba(45, 74, 96, 0.14)',

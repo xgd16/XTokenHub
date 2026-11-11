@@ -1,6 +1,7 @@
-import { fireEvent, render } from '@testing-library/react'
+import { act, render, waitFor } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import TrendChart from './TrendChart'
+import { getChart, getOption } from '../test/chart'
 import type { SeriesPoint } from '../utils/transform'
 
 const pts: SeriesPoint[] = [
@@ -10,41 +11,51 @@ const pts: SeriesPoint[] = [
 ]
 
 describe('TrendChart', () => {
-  it('渲染折线、数据点与峰值标注', () => {
+  it('渲染折线、面积与峰值标注', () => {
     const { container } = render(<TrendChart data={pts} />)
-    expect(container.querySelector('path[stroke]')).toBeTruthy()
-    expect(container.querySelectorAll('circle').length).toBe(pts.length * 2)
-    expect(container.textContent).toContain('14')
-    expect(container.textContent).toContain('09-02')
+    const opt = getOption(container)
+    expect(opt.series[0].type).toBe('line')
+    expect(opt.series[0].data).toEqual([0, 14, 3])
+    expect(opt.series[0].areaStyle).toBeTruthy()
+    expect(opt.series[0].markPoint.data[0].coord).toEqual([1, 14])
+    expect(opt.series[0].markPoint.label.formatter).toBe('14')
+    expect(opt.xAxis[0].data).toEqual(['2026-09-01', '2026-09-02', '2026-09-03'])
+    expect(opt.xAxis[0].axisLabel.formatter('2026-09-02')).toBe('09-02')
+    expect(container.querySelector('[role="img"]')?.getAttribute('aria-label')).toBe('请求趋势')
   })
 
-  it('全 0 数据仍渲染网格并显示空态提示', () => {
+  it('全 0 数据仍渲染图表并显示空态提示', () => {
     const zeros = pts.map((p) => ({ ...p, requests: 0 }))
     const { container } = render(<TrendChart data={zeros} />)
-    expect(container.querySelector('svg')).toBeTruthy()
+    expect(container.querySelector('[data-echart]')).toBeTruthy()
     expect(container.textContent).toContain('暂无数据')
   })
 
   it('空数组渲染占位文案', () => {
     const { container } = render(<TrendChart data={[]} />)
-    expect(container.querySelector('svg')).toBeNull()
+    expect(container.querySelector('[data-echart]')).toBeNull()
     expect(container.textContent).toContain('暂无数据')
   })
 })
 
 describe('TrendChart 悬浮交互', () => {
-  it('mouseMove 出现十字准线与明细提示，离开后消失', () => {
+  it('showTip 出现明细提示，hideTip 后消失', async () => {
     const { container } = render(<TrendChart data={pts} />)
-    const svg = container.querySelector('svg')!
-    svg.getBoundingClientRect = () =>
-      ({ width: 800, height: 230, top: 0, left: 0, right: 800, bottom: 230, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
+    const chart = getChart(container)
+    const tooltip = () =>
+      Array.from(container.querySelectorAll<HTMLElement>('div')).find(
+        (el) => el.style.position === 'absolute' && el.textContent?.includes('请求数 14'),
+      )
 
-    fireEvent.mouseMove(svg, { clientX: 400, clientY: 100 })
-    expect(container.querySelector('line[stroke="rgba(139, 152, 169, 0.45)"]')).toBeTruthy()
-    expect(container.textContent).toContain('请求数 14')
+    act(() => {
+      chart.dispatchAction({ type: 'showTip', seriesIndex: 0, dataIndex: 1 })
+    })
+    await waitFor(() => expect(tooltip()?.style.display).not.toBe('none'))
+    expect(tooltip()?.textContent).toContain('2026-09-02')
 
-    fireEvent.mouseLeave(svg)
-    expect(container.querySelector('line[stroke="rgba(139, 152, 169, 0.45)"]')).toBeNull()
-    expect(container.textContent).not.toContain('请求数 14')
+    act(() => {
+      chart.dispatchAction({ type: 'hideTip' })
+    })
+    await waitFor(() => expect(tooltip()?.style.display).toBe('none'))
   })
 })

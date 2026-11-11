@@ -1,24 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { compactCN } from '../utils/format'
 import type { HeatmapData, HeatMode } from '../utils/transform'
-import { useChartPalette } from '../theme'
-import ChartTooltip from './ChartTooltip'
-
-/** 回退格子尺寸：容器尚未测量到（首帧/测试环境）时使用。 */
-const FALLBACK_CELL = 10
-/** 自适应下限：低于该尺寸改为横向滚动，保证可点。 */
-const MIN_CELL = 8
-/** 自适应上限：避免超宽屏下格子大得突兀。 */
-const MAX_CELL = 40
-/** 间隙随格子等比缩放。 */
-const GAP_RATIO = 0.18
-const PAD = { l: 6, r: 6, b: 4 }
-/** 月份标签与格子的垂直间隙。 */
-const LABEL_GAP = 8
-/** 容器最小高度：避免首帧塌陷，同时保住窄屏可用性。 */
-const MIN_BOX_H = 120
-/** 卡片偏扁时，热力图最多把容器抬到该高度去撑满宽度（同行卡片会被一并拉高，故设上限）。 */
-const MAX_BOX_H = 300
+import { useChartPalette, type ChartPalette } from '../theme'
+import EChart from '../charts/EChart'
+import {
+  escapeHtml,
+  MONO_FONT,
+  tooltipSkin,
+  type EChartsCoreOption,
+} from '../charts/echarts'
+import {
+  computeHeatmapLayout,
+  HEATMAP_LABEL_GAP,
+  HEATMAP_PAD,
+} from '../charts/heatmapLayout'
 
 interface Props {
   data: HeatmapData
@@ -28,32 +23,114 @@ interface Props {
   loading?: boolean
 }
 
-interface Hover {
-  cx: number // 视口坐标：portal 到 body 的 fixed 浮层，不受 overflow 裁剪
-  cy: number
-  date: string
-  text: string
+function cellText(date: string, value: number, mode: HeatMode): string {
+  const m = Number(date.slice(5, 7))
+  const d = Number(date.slice(8, 10))
+  const suffix = mode === 'weekly' ? ' 当周' : ''
+  return `${m}月${d}日${suffix} · ${compactCN(value)} tokens`
 }
 
-/** 给定格子尺寸下的完整排版结果：宽高都由真实 gap / 标签高度推导，供反解与收缩共用。 */
-function layout(cell: number, cols: number, rows: number) {
-  const gap = Math.max(2, Math.round(cell * GAP_RATIO))
-  const labelFs = Math.max(10, Math.min(18, Math.round(cell * 0.6)))
-  const padT = labelFs + LABEL_GAP
+function buildOption(
+  data: HeatmapData,
+  mode: HeatMode,
+  pal: ChartPalette,
+  geo: ReturnType<typeof computeHeatmapLayout>,
+): EChartsCoreOption {
+  const cols = data.columns.length
+  const rows = Math.max(...data.columns.map((c) => c.cells.length), 1)
+  const monthByIndex = new Map(data.monthLabels.map((m) => [m.index, m.label]))
+  // 类目带里放不下元素本身：band = 元素 + 间隙，反解出元素尺寸才能保证像素级间隙。
+  const symbolW = Math.max(geo.cell - geo.gap / cols, 2)
+  const symbolH = Math.max(geo.cell - geo.gap / rows, 2)
+  const points = data.columns.flatMap((col, ci) =>
+    col.cells.map((c, ri) => ({
+      value: [ci, ri],
+      date: c.date,
+      count: c.value,
+      level: c.level,
+    })),
+  )
+
   return {
-    cell,
-    gap,
-    labelFs,
-    padT,
-    W: PAD.l + cols * (cell + gap) - gap + PAD.r,
-    H: padT + rows * (cell + gap) - gap + PAD.b,
+    animation: false,
+    grid: {
+      left: HEATMAP_PAD.l,
+      right: HEATMAP_PAD.r,
+      top: geo.padT,
+      bottom: HEATMAP_PAD.b,
+      containLabel: false,
+    },
+    xAxis: {
+      type: 'category',
+      data: data.columns.map((_, i) => i),
+      boundaryGap: true,
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: {
+        interval: 0,
+        hideOverlap: false,
+        margin: HEATMAP_LABEL_GAP / 2,
+        align: 'left',
+        formatter: (value: number) => monthByIndex.get(Number(value)) ?? '',
+        color: pal.textFaint,
+        fontSize: geo.labelFs,
+        fontFamily: MONO_FONT,
+      },
+      splitLine: { show: false },
+    },
+    yAxis: {
+      type: 'category',
+      data: Array.from({ length: rows }, (_, i) => i),
+      boundaryGap: true,
+      show: false,
+      splitLine: { show: false },
+    },
+    tooltip: {
+      trigger: 'item',
+      ...tooltipSkin(pal),
+      confine: false,
+      appendTo: () => document.body,
+      // 还原原来的位置：浮层底边在光标上方 10px、水平居中。
+      position: (point: number[], _params: any, _dom: any, _rect: any, size: any) => {
+        const [w, h] = size.contentSize
+        return [point[0] - w / 2, point[1] - h - 10]
+      },
+      formatter: (params: any) => {
+        const item = params?.data
+        if (!item) return ''
+        return escapeHtml(cellText(item.date, item.count, mode))
+      },
+    },
+    series: [
+      {
+        type: 'scatter',
+        coordinateSystem: 'cartesian2d',
+        symbol: 'roundRect',
+        symbolSize: [symbolW, symbolH],
+        data: points.map((p) => ({
+          ...p,
+          itemStyle: { color: pal.heat[p.level] },
+        })),
+        emphasis: {
+          scale: false,
+          itemStyle: {
+            borderColor: pal.hoverStroke,
+            borderWidth: geo.cell > 14 ? 2 : 1,
+          },
+        },
+      },
+    ],
   }
 }
 
-/** GitHub 风格 Token 活动热力图：格子尺寸随容器宽高自适应（移动端过窄时横向可滚动），悬浮显示明细。 */
-export default function TokenHeatmap({ data, mode = 'daily', ariaLabel = 'Token 活动热力图', loading = false }: Props) {
+/** GitHub 风格 Token 活动热力图（ECharts）：格子随容器宽高自适应，悬浮显示明细。 */
+export default function TokenHeatmap({
+  data,
+  mode = 'daily',
+  ariaLabel = 'Token 活动热力图',
+  loading = false,
+}: Props) {
   const pal = useChartPalette()
-  const [hover, setHover] = useState<Hover | null>(null)
   const boxRef = useRef<HTMLDivElement | null>(null)
   const [box, setBox] = useState<{ w: number; h: number } | null>(null)
 
@@ -71,25 +148,10 @@ export default function TokenHeatmap({ data, mode = 'daily', ariaLabel = 'Token 
   const geo = useMemo(() => {
     const cols = data.columns.length
     const rows = Math.max(...data.columns.map((c) => c.cells.length), 1)
-
-    // 宽度反解：gap 随 cell 等比缩放，cell ≈ 可用宽 / (cols + (cols-1)*ratio)
-    const availW = box && box.w > 0 ? box.w - PAD.l - PAD.r : null
-    let cell = availW == null
-      ? FALLBACK_CELL
-      : Math.min(MAX_CELL, Math.floor(availW / (cols + (cols - 1) * GAP_RATIO)))
-    if (cell < MIN_CELL) cell = MIN_CELL // 容器过窄：保底尺寸 + 横向滚动
-
-    // 反解用了连续近似、gap 又要取整，横向再收敛一次（MIN_CELL 时保留横向滚动）
-    while (cell > MIN_CELL && availW != null && layout(cell, cols, rows).W > availW) cell--
-
-    // 撑满宽度所需的高度：容器被同行卡片拉得比这还高时无副作用，比这矮就把容器抬起来
-    const boxMinH = availW == null ? MIN_BOX_H : Math.min(MAX_BOX_H, Math.max(MIN_BOX_H, layout(cell, cols, rows).H))
-    const availH = Math.max(boxMinH, box && box.h > 0 ? box.h : 0)
-
-    // 高度是硬约束：正方格子在可用高度内放不下就继续收缩
-    while (cell > MIN_CELL && layout(cell, cols, rows).H > availH) cell--
-    return { cols, rows, boxMinH, ...layout(cell, cols, rows) }
+    return computeHeatmapLayout(cols, rows, box?.w ?? null, box?.h ?? null)
   }, [data, box])
+
+  const option = useMemo(() => buildOption(data, mode, pal, geo), [data, mode, pal, geo])
 
   if (data.columns.length === 0) {
     if (loading) {
@@ -121,67 +183,18 @@ export default function TokenHeatmap({ data, mode = 'daily', ariaLabel = 'Token 
     )
   }
 
-  const cellText = (date: string, value: number): string => {
-    const m = Number(date.slice(5, 7))
-    const d = Number(date.slice(8, 10))
-    const suffix = mode === 'weekly' ? ' 当周' : ''
-    return `${m}月${d}日${suffix} · ${compactCN(value)} tokens`
-  }
-
   return (
     <div
       ref={boxRef}
       style={{ flex: 1, minHeight: geo.boxMinH, overflowX: 'auto', display: 'flex', alignItems: 'center' }}
     >
-      <svg
+      <EChart
+        option={option}
         width={geo.W}
         height={geo.H}
-        style={{ display: 'block', margin: '0 auto', maxWidth: 'none' }}
-        role="img"
-        aria-label={ariaLabel}
-        onMouseLeave={() => setHover(null)}
-      >
-        {/* 月份标签 */}
-        {data.monthLabels.map((m) => (
-          <text
-            key={`m-${m.index}`}
-            x={PAD.l + m.index * (geo.cell + geo.gap)}
-            y={geo.labelFs + 2}
-            fontSize={geo.labelFs}
-            fill={pal.textFaint}
-            style={{ fontFamily: 'var(--font-mono)' }}
-          >
-            {m.label}
-          </text>
-        ))}
-
-        {/* 单元格 */}
-        {data.columns.map((col, ci) =>
-          col.cells.map((c, ri) => {
-            const x = PAD.l + ci * (geo.cell + geo.gap)
-            const y = geo.padT + ri * (geo.cell + geo.gap)
-            return (
-              <rect
-                key={c.date}
-                x={x}
-                y={y}
-                width={geo.cell}
-                height={geo.cell}
-                rx={Math.max(2, Math.round(geo.cell * 0.16))}
-                fill={pal.heat[c.level]}
-                stroke={hover?.date === c.date ? pal.hoverStroke : 'transparent'}
-                strokeWidth={geo.cell > 14 ? 2 : 1}
-                onMouseEnter={(e) => setHover({ cx: e.clientX, cy: e.clientY, date: c.date, text: cellText(c.date, c.value) })}
-              />
-            )
-          }),
-        )}
-      </svg>
-      {hover && (
-        <ChartTooltip fixed x={hover.cx} y={hover.cy - 10}>
-          {hover.text}
-        </ChartTooltip>
-      )}
+        ariaLabel={ariaLabel}
+        style={{ margin: '0 auto', flexShrink: 0 }}
+      />
     </div>
   )
 }

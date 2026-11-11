@@ -41,7 +41,7 @@
 - **🧠 Agent 共享记忆库** —— 跨会话长期记忆：独立 `/memory/v1` API + MCP 工具，中文全文检索（FTS5 + n-gram，无向量），命名空间归类 + 控制台一键 LLM 分类，控制台含记忆关系图；
 - **📦 单二进制自托管** —— 前端经 go:embed 内嵌，`make build` 产出一个静态二进制（零 CGO），拷到任何 Linux/macOS 机器即可跑。
 
-**技术栈**：后端 Go + Gin + GORM + SQLite（纯 Go 驱动 glebarez/sqlite）+ Viper + gorilla/websocket；前端 React 19 + TypeScript + Ant Design 6 + Vite；每个模块配单元测试，`go test ./... -race` 全绿，语句覆盖率 87.6%。
+**技术栈**：后端 Go + Gin + GORM + SQLite（纯 Go 驱动 glebarez/sqlite）+ Viper + gorilla/websocket；前端 React 19 + TypeScript + Ant Design 6 + Vite + Apache ECharts；每个模块配单元测试，`go test ./... -race` 全绿，语句覆盖率 87.6%。
 
 ## 架构
 

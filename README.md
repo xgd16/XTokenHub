@@ -41,7 +41,7 @@ Bring together upstream LLM provider APIs as channels, expose standardized proto
 - **🧠 Shared agent memory bank** — Cross-session long-term memory: standalone `/memory/v1` API + MCP tools, Chinese-friendly full-text search (FTS5 + n-gram, no vectors), namespace classification with one-click LLM classification in the console, plus a relationship graph view;
 - **📦 Single-binary self-hosting** — The frontend is embedded via go:embed; `make build` produces one static binary (zero CGO). Copy it to any Linux/macOS machine and run.
 
-**Tech stack**: Backend Go + Gin + GORM + SQLite (pure-Go driver glebarez/sqlite) + Viper + gorilla/websocket; frontend React 19 + TypeScript + Ant Design 6 + Vite. Every module has unit tests — `go test ./... -race` all green, 87.6% statement coverage.
+**Tech stack**: Backend Go + Gin + GORM + SQLite (pure-Go driver glebarez/sqlite) + Viper + gorilla/websocket; frontend React 19 + TypeScript + Ant Design 6 + Vite + Apache ECharts. Every module has unit tests — `go test ./... -race` all green, 87.6% statement coverage.
 
 ## Architecture
 
