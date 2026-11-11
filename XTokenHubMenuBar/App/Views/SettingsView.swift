@@ -51,17 +51,66 @@ struct SettingsView: View {
             }
 
             Section {
-                ForEach(AppSettings.MenuBarMetric.allCases) { metric in
-                    Toggle(metric.label, isOn: metricBinding(metric))
+                Toggle("在菜单栏显示", isOn: menuBarVisibleBinding)
+                Toggle("显示悬浮窗", isOn: floatingVisibleBinding)
+                LabeledContent("浮窗样式") {
+                    Picker("浮窗样式", selection: $settings.floatingStyle) {
+                        ForEach(AppSettings.FloatingStyle.allCases) { style in
+                            Text(style.label).tag(style)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 160)
                 }
-                LabeledContent("效果预览") {
+                LabeledContent("菜单栏预览") {
                     MenuBarLabel(store: store, settings: settings)
                         .font(.callout)
                 }
+                Button("恢复悬浮窗默认位置") {
+                    settings.onResetFloatingPosition?()
+                }
             } header: {
-                Text("菜单栏显示")
+                Text("显示位置")
             } footer: {
-                Text("自由勾选要显示的指标,顺序固定为:图标 · 请求数 · Token · 命中率 · 花费 · 速度 · 峰谷;全部取消时仅显示图标。峰谷取最近切换的模型,显示「峰」或「谷」。")
+                Text("刘海屏顶部菜单栏可用宽度有限:可以把指标挪到悬浮窗、菜单栏只留图标,避免长文本被系统裁掉。两个开关至少保留一个,关掉最后一个时会自动打开另一个。\n\n悬浮窗有两种形态:统计卡(两列)与条状(单行,约 32pt 高),共用同一套浮窗指标;右键浮窗也能快速切换。默认在屏幕右上角、菜单栏下方,可拖动并记住位置。")
+            }
+
+            Section {
+                HStack(spacing: 0) {
+                    Text("指标")
+                    Spacer(minLength: 8)
+                    Text("菜单栏").frame(width: 52)
+                    Text("浮窗").frame(width: 52)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                ForEach(AppSettings.MenuBarMetric.allCases) { metric in
+                    HStack(spacing: 0) {
+                        Text(metric.label)
+                        Spacer(minLength: 8)
+                        Toggle("菜单栏显示\(metric.label)", isOn: menuBarMetricBinding(metric))
+                            .labelsHidden()
+                            .toggleStyle(.checkbox)
+                            .frame(width: 52)
+                        if metric == .icon {
+                            Text("固定")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                                .frame(width: 52)
+                                .help("悬浮卡片始终显示连接状态图标")
+                        } else {
+                            Toggle("浮窗显示\(metric.label)", isOn: floatingMetricBinding(metric))
+                                .labelsHidden()
+                                .toggleStyle(.checkbox)
+                                .frame(width: 52)
+                        }
+                    }
+                }
+            } header: {
+                Text("显示指标")
+            } footer: {
+                Text("菜单栏与浮窗各选各的,顺序固定为:图标 · 请求数 · Token · 命中率 · 花费 · 速度 · 峰谷。菜单栏全部取消时仅显示图标;浮窗未勾选任何指标时显示占位提示。峰谷取最近切换的模型,显示「峰」或「谷」。")
             }
 
             Section {
@@ -101,7 +150,7 @@ struct SettingsView: View {
                         .foregroundStyle(.red)
                 }
                 LabeledContent("版本") {
-                    Text("1.2.0")
+                    Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
                         .foregroundStyle(.secondary)
                 }
             } header: {
@@ -111,7 +160,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 440, height: 500)
+        .frame(width: 440, height: 640)
     }
 
     /// 小组件余额渠道的可选项:优先渠道列表;渠道接口还没返回时退回「已查到余额的渠道」。
@@ -146,13 +195,37 @@ struct SettingsView: View {
         )
     }
 
-    private func metricBinding(_ metric: AppSettings.MenuBarMetric) -> Binding<Bool> {
+    private func menuBarMetricBinding(_ metric: AppSettings.MenuBarMetric) -> Binding<Bool> {
         Binding(
             get: { settings.menuBarMetrics.contains(metric) },
             set: { on in
                 if on { settings.menuBarMetrics.insert(metric) }
                 else { settings.menuBarMetrics.remove(metric) }
             }
+        )
+    }
+
+    private func floatingMetricBinding(_ metric: AppSettings.MenuBarMetric) -> Binding<Bool> {
+        Binding(
+            get: { settings.floatingMetrics.contains(metric) },
+            set: { on in
+                if on { settings.floatingMetrics.insert(metric) }
+                else { settings.floatingMetrics.remove(metric) }
+            }
+        )
+    }
+
+    private var menuBarVisibleBinding: Binding<Bool> {
+        Binding(
+            get: { settings.showMenuBarItem },
+            set: { settings.setMenuBarItemVisible($0) }
+        )
+    }
+
+    private var floatingVisibleBinding: Binding<Bool> {
+        Binding(
+            get: { settings.showFloatingWindow },
+            set: { settings.setFloatingWindowVisible($0) }
         )
     }
 

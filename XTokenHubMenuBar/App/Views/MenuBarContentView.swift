@@ -426,27 +426,9 @@ struct MenuBarContentView: View {
 
     // MARK: - 设置窗口可靠打开
 
-    /// MenuBarExtra 面板是临时窗口:点击时 App 处于非激活态,面板又随焦点转移关闭,
-    /// `openSettings` 在这种时序下可能被吞掉,或设置窗口打开后未置前(表现为"点不开")。
-    /// 处理:先激活 App;窗口已存在直接置前;否则 openSettings 后兜底再激活并置前一次。
+    /// 与浮窗右键菜单共用同一套唤起逻辑(见 `AppSettingsWindow`)。
     private func openSettingsReliably() {
-        let findSettingsWindow = {
-            NSApp.windows.first {
-                $0.identifier?.rawValue == "com_apple_SwiftUI_Settings_window"
-                    || $0.frameAutosaveName == "com_apple_SwiftUI_Settings_window"
-            }
-        }
-
-        NSApp.activate(ignoringOtherApps: true)
-        if let existing = findSettingsWindow() {
-            existing.makeKeyAndOrderFront(nil)
-        } else {
-            openSettings()
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            NSApp.activate(ignoringOtherApps: true)
-            findSettingsWindow()?.makeKeyAndOrderFront(nil)
-        }
+        AppSettingsWindow.open(fallback: { openSettings() })
     }
 
     // MARK: - 状态文案

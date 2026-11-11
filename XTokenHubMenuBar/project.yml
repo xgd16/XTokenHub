@@ -7,8 +7,10 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "1.2.0"
+    MARKETING_VERSION: "1.4.1"
     CURRENT_PROJECT_VERSION: "1"
+    # 只分发 Apple Silicon 版本(macOS 26 起 Intel Mac 已退役),DMG 体积也小一半
+    ARCHS: arm64
     # 本地开发用 ad-hoc 签名(无开发者账号也能跑,App Sandbox entitlement 合法)
     CODE_SIGN_STYLE: Manual
     CODE_SIGN_IDENTITY: "-"

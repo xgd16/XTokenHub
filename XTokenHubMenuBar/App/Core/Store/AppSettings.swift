@@ -38,12 +38,53 @@ final class AppSettings {
         }
     }
 
+    /// 浮窗形态:两列统计卡 / 单行条状。两者共用 `floatingMetrics` 勾选。
+    enum FloatingStyle: String, CaseIterable, Identifiable {
+        case card
+        case bar
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .card: "统计卡"
+            case .bar: "条状"
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .card: "rectangle.grid.2x2"
+            case .bar: "menubar.rectangle"
+            }
+        }
+
+        /// 右键菜单里的切换项(切到另一种形态)。
+        var switchActionTitle: String {
+            switch self {
+            case .card: "切换为条状浮窗"
+            case .bar: "切换为统计卡"
+            }
+        }
+
+        var switchActionSymbol: String {
+            switch self {
+            case .card: FloatingStyle.bar.symbol
+            case .bar: FloatingStyle.card.symbol
+            }
+        }
+    }
+
     private enum Key {
         static let sources = "dataSources"
         static let selectedSourceID = "selectedSourceID"
         static let legacyBaseURL = "baseURLString" // 旧版单地址,迁移后移除
         static let metrics = "menuBarMetrics"
         static let legacyMode = "menuBarMode" // 旧版单选模式,迁移后废弃
+        static let floatingMetrics = "floatingMetrics"
+        static let floatingStyle = "floatingStyle"
+        static let showMenuBarItem = "showMenuBarItem"
+        static let showFloatingWindow = "showFloatingWindow"
         static let launchAtLogin = "launchAtLogin"
         static let peakNotify = "peakNotifyEnabled"
         static let widgetBalanceChannels = "widgetBalanceChannels"
@@ -60,14 +101,54 @@ final class AppSettings {
         dataSources.first { $0.id == selectedSourceID } ?? dataSources[0]
     }
 
-    /// 菜单栏显示的指标组合(顺序固定:图标、请求数、Token、命中率、花费、速度)。
+    /// 菜单栏显示的指标组合(顺序固定:图标、请求数、Token、命中率、花费、速度、峰谷)。
     var menuBarMetrics: Set<MenuBarMetric> {
         didSet {
             guard oldValue != menuBarMetrics else { return }
-            let raw = menuBarMetrics.map(\.rawValue).sorted().joined(separator: ",")
-            UserDefaults.standard.set(raw, forKey: Key.metrics)
+            persist(menuBarMetrics, key: Key.metrics)
         }
     }
+
+    /// 悬浮窗显示的指标组合(与菜单栏**各选各的**;固定显示状态图标,`.icon` 不参与)。
+    /// 统计卡与条状共用这一套勾选。
+    var floatingMetrics: Set<MenuBarMetric> {
+        didSet {
+            guard oldValue != floatingMetrics else { return }
+            persist(floatingMetrics, key: Key.floatingMetrics)
+            onFloatingChange?()
+        }
+    }
+
+    /// 悬浮窗形态:统计卡 / 条状。切换后由控制器保持左上角重算尺寸。
+    var floatingStyle: FloatingStyle {
+        didSet {
+            guard oldValue != floatingStyle else { return }
+            UserDefaults.standard.set(floatingStyle.rawValue, forKey: Key.floatingStyle)
+            onFloatingChange?()
+        }
+    }
+
+    /// 是否显示系统菜单栏项(`MenuBarExtra` 的 `isInserted`)。
+    var showMenuBarItem: Bool {        didSet {
+            guard oldValue != showMenuBarItem else { return }
+            UserDefaults.standard.set(showMenuBarItem, forKey: Key.showMenuBarItem)
+        }
+    }
+
+    /// 是否显示置顶悬浮卡片。
+    var showFloatingWindow: Bool {
+        didSet {
+            guard oldValue != showFloatingWindow else { return }
+            UserDefaults.standard.set(showFloatingWindow, forKey: Key.showFloatingWindow)
+            onFloatingChange?()
+        }
+    }
+
+    /// 浮窗显隐/指标变化回调(AppDelegate 转给 FloatingPanelController)。
+    var onFloatingChange: (() -> Void)?
+
+    /// 设置页「恢复浮窗默认位置」回调(由控制器清掉窗口位置记忆)。
+    var onResetFloatingPosition: (() -> Void)?
 
     var launchAtLogin: Bool {
         didSet {
@@ -119,6 +200,31 @@ final class AppSettings {
     /// 设置变更回调(数据来源变化需触发 HubStore 重连)。
     var onChange: (() -> Void)?
 
+    // MARK: - 显示位置守卫
+
+    /// 两个入口至少保留一个:关掉最后一个时自动打开另一个,
+    /// 避免菜单栏图标与浮窗都关掉后用户没有任何可点入口。
+    func setMenuBarItemVisible(_ visible: Bool) {
+        if !visible && !showFloatingWindow { showFloatingWindow = true }
+        showMenuBarItem = visible
+    }
+
+    func setFloatingWindowVisible(_ visible: Bool) {
+        if !visible && !showMenuBarItem { showMenuBarItem = true }
+        showFloatingWindow = visible
+    }
+
+    /// 纯函数形式的可见性纠正(单测覆盖;`init` 里也用它清理脏状态)。
+    static func resolveVisibility(menuBar: Bool, floating: Bool) -> (menuBar: Bool, floating: Bool) {
+        if menuBar || floating { return (menuBar, floating) }
+        return (true, false)
+    }
+
+    private func persist(_ metrics: Set<MenuBarMetric>, key: String) {
+        let raw = metrics.map(\.rawValue).sorted().joined(separator: ",")
+        UserDefaults.standard.set(raw, forKey: key)
+    }
+
     init() {
         let d = UserDefaults.standard
 
@@ -151,6 +257,27 @@ final class AppSettings {
         } else {
             menuBarMetrics = [.tokens, .throughput]
         }
+
+        // 浮窗指标独立于菜单栏;无旧值时默认除「图标」外的全部数据指标
+        if let raw = d.string(forKey: Key.floatingMetrics), !raw.isEmpty {
+            floatingMetrics = Set(raw.split(separator: ",").compactMap { MenuBarMetric(rawValue: String($0)) })
+        } else {
+            floatingMetrics = [.requests, .tokens, .cacheHit, .costToday, .throughput, .peakStatus]
+        }
+
+        floatingStyle = d.string(forKey: Key.floatingStyle)
+            .flatMap(FloatingStyle.init(rawValue:)) ?? .card
+
+        // 菜单栏项默认显示、浮窗默认关闭;两个都关的脏状态回退为菜单栏项
+        let menuBarVisible = d.object(forKey: Key.showMenuBarItem) == nil
+            ? true
+            : d.bool(forKey: Key.showMenuBarItem)
+        let visibility = AppSettings.resolveVisibility(
+            menuBar: menuBarVisible,
+            floating: d.bool(forKey: Key.showFloatingWindow)
+        )
+        showMenuBarItem = visibility.menuBar
+        showFloatingWindow = visibility.floating
 
         launchAtLogin = d.bool(forKey: Key.launchAtLogin) && SMAppService.mainApp.status == .enabled
         peakNotifyEnabled = d.bool(forKey: Key.peakNotify)

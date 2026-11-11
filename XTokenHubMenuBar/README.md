@@ -7,6 +7,7 @@ XTokenHub 的 macOS 菜单栏伴侣应用 —— 类 iStat Menus 的 token 用�
 ## 功能
 
 - **菜单栏实时指标自由组合**:设置中按需勾选 图标 / 今日请求数 / 今日 Token / 缓存命中率 / 今日花费 / 实时速度 / 峰谷状态,如 `482 · 3214.45万 · 96.0% · $1.234 · 12/s`(默认 数量+速度;峰谷状态显示单字 `峰`/`谷`,取最近切换的模型)
+- **悬浮窗(适配刘海屏)**:置顶的两列迷你统计卡 / 单行条状两种形态,菜单栏与浮窗**各选各的指标**,可把指标从顶部菜单栏分流出来,避免刘海屏可用宽度太短导致长文本被系统静默裁掉。悬浮窗默认在屏幕右上角、菜单栏下方(天然避开刘海),可拖动并记住位置;菜单栏项可完全隐藏,此时用浮窗右上角按钮或右键菜单打开完整面板 / 设置 / 恢复默认位置。两个入口至少保留一个(关掉最后一个时自动打开另一个)
 - **下拉面板**(内容对齐 Web 仪表盘;**系统 Liquid Glass 为主材质**,分区为独立玻璃模块:
   - 玻璃形状「少而大」:九宫格等小区块合并成一块玻璃 + 内部发丝线分格,不做「每小块各自玻璃 + 密排」
     —— 小玻璃的镜面硬边会在 10pt 窄缝里互相挤压成脏灰边(液态玻璃只适合大面、且要有间隔)
@@ -26,8 +27,22 @@ XTokenHub 的 macOS 菜单栏伴侣应用 —— 类 iStat Menus 的 token 用�
   - 调用方 TOP · 30 天(`stats/by-key`,同 Web 口径)
   - 实时请求流:`request.started` 插入"生成中"行,`request.completed` 按 `req_id` 原位替换;三行富行常驻展示协议/转发模式/模型/状态码/时间、渠道·调用方·客户端(UA 短名)、入出 Token·缓存命中·输出速度·耗时·花费,错误行红色高亮,悬停查看会话/请求头/IP/计价口径等完整明细
   - 底部操作:打开 Web 控制台 / 设置 / 退出
-- **设置**:Hub 服务地址(默认 `http://127.0.0.1:9192`,支持远程部署)、菜单栏显示指标(含今日花费、峰谷状态)、**小组件显示哪些渠道的余额(多选,只有勾选的才显示)**、登录自启(SMAppService)、峰谷切换通知(本地通知,按模型提醒转入高峰/空闲,默认关闭)
+- **设置**:Hub 服务地址(默认 `http://127.0.0.1:9192`,支持远程部署)、**显示位置(菜单栏项 / 悬浮卡片各可开关)与两套独立指标勾选**、**小组件显示哪些渠道的余额(多选,只有勾选的才显示)**、登录自启(SMAppService)、峰谷切换通知(本地通知,按模型提醒转入高峰/空闲,默认关闭)
 - **桌面小组件**:Small / Medium / Large 三种尺寸(170×170、358×170、358×358),分别做「今日速览」「今日统计」「完整仪表盘」(统计磁贴 + 24h 趋势 + 模型 TOP + 渠道余额);余额只展示设置里勾选的渠道(未配置 = 默认全部),按渠道 id 排序、各尺寸按空间取前几个:Small 右下角一栏取第一个(有余额时替代「缓存命中」,零高度成本)、Medium 右栏最多 3 行「状态点 + 渠道名 + 原币种金额」(再多加一行「还有 N 个勾选渠道未显示」)、Large 每行 2 个最多 2 行(溢出并进标签「余额+N」);口径与面板同一套(计费币种/汇率、万/亿 单位),主 App 数据变化时主动触发刷新;配置了时段价时各档都会多出一行峰谷状态(时段 + 单价 + 倒计时),时间线在切换时刻预置条目,到点自动翻转状态
+
+## 悬浮窗(适配刘海屏)
+
+刘海屏 MacBook 的菜单栏被摄像头区域切成两段,右侧可用宽度很短,指标一多就会被系统静默裁掉。悬浮窗把指标分流到桌面上:
+
+- 两种形态,共用同一套浮窗指标与窗口位置(设置 → 显示位置 → 浮窗样式,或在浮窗右键菜单里快速切换):
+  - **统计卡**(默认):两列迷你统计卡,固定宽度 252pt(外留 6pt 透明边);勾选几个指标就长高几行,空选择显示占位提示
+  - **条状**:单行 `● 482 · 3214万 · 96.0% · $1.2 · 12/s · 峰`,高度约 32pt,宽度随指标自适应,适合长期贴在菜单栏下方
+- 菜单栏与浮窗是**两套独立勾选**(设置 → 显示指标);`.icon` 固定显示在卡片/条状左侧作为连接状态
+- 默认位置在屏幕可见区右上角、菜单栏下方(用 `visibleFrame` 定位,天然避开刘海);拖动后通过 `NSWindow Frame` 记忆,换显示器时自动夹取回屏幕内
+- 窗口层级 `.floating` + `.canJoinAllSpaces` / `.fullScreenAuxiliary`:浮在普通窗口上方,所有桌面与全屏空间可见;`.nonactivatingPanel` 保证点击不激活宿主 App
+- 菜单栏项通过 `MenuBarExtra(isInserted:)` 可完全隐藏。隐藏后浮窗按钮/右键菜单提供「打开完整面板 / 切换样式 / 设置… / 恢复浮窗默认位置 / 隐藏悬浮窗」;完整面板是自绘 `NSPanel`(popover 材质)承载与菜单栏下拉相同的 `MenuBarContentView`,优先展开在浮窗**左侧**、顶边对齐(浮窗始终完整可见);**单击浮窗任意位置可打开/收起完整面板**,Esc 同样可收起
+- 「菜单栏项 + 悬浮窗」至少保留一个:关掉最后一个时自动打开另一个,避免两个入口都没了
+- 峰谷状态用 `TimelineView` 每 30s 重算,不用等数据刷新
 
 ## 峰谷时段价
 
@@ -42,6 +57,7 @@ XTokenHub 的 macOS 菜单栏伴侣应用 —— 类 iStat Menus 的 token 用�
 ## 环境要求
 
 - macOS 26+(Liquid Glass 为 macOS 26 原生 API,无旧系统兼容分支)
+- Apple Silicon(只出 arm64 构建;macOS 26 起 Intel Mac 已退役)
 - Xcode 26+
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen)(`brew install xcodegen`)
 
@@ -100,7 +116,7 @@ make package              # 制作 DMG 安装包(Release 构建,输出 XTokenHub
 
 ```
 App/
-├── XTokenHubMenuBarApp.swift   # 入口:MenuBarExtra(.window) + Settings 场景
+├── XTokenHubMenuBarApp.swift   # 入口:MenuBarExtra(isInserted:) + Settings 场景 + 浮窗控制器
 ├── Core/
 │   ├── Models/                 # 与 Go 端 json 标签对齐的 Codable + WS 事件解码
 │   ├── Networking/
@@ -109,12 +125,17 @@ App/
 │   │   └── WidgetBridgeServer.swift  # 127.0.0.1:9193 只读 /snapshot,给小组件供数
 │   └── Store/
 │       ├── HubStore.swift      # @Observable 主线程状态机(REST + WS 事件汇聚)
-│       └── AppSettings.swift   # UserDefaults 持久化设置
-├── Views/                      # 玻璃面板、菜单栏标签、设置页、组件
-└── Utilities/                  # TokenFormatter / MoneyFormatter / HubDate / HubURL
+│       └── AppSettings.swift   # UserDefaults 持久化设置(含两套指标与入口守卫)
+├── Views/
+│   ├── SurfaceMetrics.swift    # 菜单栏/浮窗共用的指标快照与纯格式化
+│   ├── FloatingMetricsView.swift     # 悬浮窗入口/统计卡 + 拖拽手柄 + 右键菜单
+│   ├── FloatingBarContent.swift      # 单行条状浮窗(状态点 + 指标串)
+│   ├── FloatingPanelController.swift # NSPanel 置顶/拖拽/位置记忆 + 完整面板窗口
+│   └── Components/             # 液态玻璃分区、统计网格、图表、实时请求行
+└── Utilities/                  # TokenFormatter / MoneyFormatter / HubDate / HubURL / AppSettingsWindow
 Shared/                         # App 与 Widget 共用:桥接载荷契约 + 取数(桥 → 直连 → 缓存)
 Widget/                         # Widget Extension:入口 / 配置 Intent / Provider / 三种尺寸视图
-Tests/                          # Swift Testing 单元测试(模型解码/格式化/URL 规范化)
+Tests/                          # Swift Testing 单元测试(模型解码/格式化/URL/浮窗排版)
 Tools/make_icon.swift           # 重新生成占位 AppIcon
 ```
 

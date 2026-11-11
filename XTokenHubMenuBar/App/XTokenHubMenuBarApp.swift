@@ -6,7 +6,7 @@ struct XTokenHubMenuBarApp: App {
     @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
 
     var body: some Scene {
-        MenuBarExtra {
+        MenuBarExtra(isInserted: menuBarInserted) {
             MenuBarContentView()
                 .environment(appDelegate.store)
                 .environment(appDelegate.settings)
@@ -21,6 +21,15 @@ struct XTokenHubMenuBarApp: App {
                 .environment(appDelegate.settings)
         }
     }
+
+    /// 菜单栏项显隐:设置页与浮窗右键菜单都走同一对守卫方法,
+    /// 保证「菜单栏 + 浮窗」至少保留一个入口。
+    private var menuBarInserted: Binding<Bool> {
+        Binding(
+            get: { appDelegate.settings.showMenuBarItem },
+            set: { appDelegate.settings.setMenuBarItemVisible($0) }
+        )
+    }
 }
 
 /// 状态与设置的唯一属主,随应用生命周期常驻。
@@ -28,6 +37,8 @@ struct XTokenHubMenuBarApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let store = HubStore()
     let settings = AppSettings()
+    /// 置顶悬浮卡片(含菜单栏项隐藏后的完整面板入口)。
+    private var floatingController: FloatingPanelController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 峰谷通知:菜单栏 App 常处非激活态,挂上代理保证面板打开时也弹横幅
@@ -35,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.onPeakNotifyChange = { [weak self] enabled in
             Task { @MainActor in await self?.store.handlePeakNotifyChange(enabled) }
         }
+        floatingController = FloatingPanelController(store: store, settings: settings)
         store.start(with: settings)
     }
 }

@@ -15,15 +15,17 @@ import SwiftUI
 /// 3. **面板内不加任何投影、不加不透明底色**:玻璃的折射和镜面高光自己就是层次,
 ///    再加填充或 `.shadow` 只会把玻璃糊成毛玻璃。
 ///
-/// 想更透:把 `variant` 换成 `.clear`(需要自行处理文字可读性);想更实:.regular 已是系统默认档。
+/// 想更透:传 `variant: .clear`(需要自行处理文字可读性);想更实:`variant: .regular`
+/// (系统默认档,会主动加底衬)。默认值仍是 `.clear`,保持现有面板观感不变。
 struct PanelSurfaceStyle: ViewModifier {
     var cornerRadius: CGFloat = 20
 
     /// 玻璃档位。`.clear` 是文档里更透的一档(代价是 Apple 要求自行保证文字可读性);
     /// `.regular` 是默认可读性优先档,会主动加底衬,所以天生偏实。
-    /// 注意:面板自身已是一层系统玻璃,这里再叠一层 —— 两层各自提亮一次,是「看着像毛玻璃」的主因。
+    /// 注意:菜单栏面板自身已是一层系统玻璃,这里再叠一层 —— 两层各自提亮一次,是「看着像毛玻璃」的主因。
+    /// 悬浮卡片没有这层系统玻璃兜底,所以用 `.regular`。
     /// 系统设置 → 外观 → Liquid Glass 的「清透 / 着色」也会整体调节这两档的透明度。
-    private var variant: Glass { .clear }
+    var variant: Glass = .clear
 
     func body(content: Content) -> some View {
         content.glassEffect(variant, in: .rect(cornerRadius: cornerRadius))
@@ -31,9 +33,9 @@ struct PanelSurfaceStyle: ViewModifier {
 }
 
 extension View {
-    /// 套用面板统一的液态玻璃材质。
-    func panelSurface(cornerRadius: CGFloat = 20) -> some View {
-        modifier(PanelSurfaceStyle(cornerRadius: cornerRadius))
+    /// 套用统一的液态玻璃材质。
+    func panelSurface(cornerRadius: CGFloat = 20, variant: Glass = .clear) -> some View {
+        modifier(PanelSurfaceStyle(cornerRadius: cornerRadius, variant: variant))
     }
 }
 

@@ -19,6 +19,12 @@ struct StatItem {
 struct StatGrid: View {
     let cells: [StatItem]
     var columns: Int = 3
+    /// 玻璃档位:菜单栏面板内用默认 `.clear`(下面已有系统玻璃);
+    /// 悬浮卡片自身就是唯一一层玻璃,传 `.regular` 保证壁纸上的可读性。
+    var variant: Glass = .clear
+    /// 悬浮卡片把标题栏和网格包在**同一块**玻璃里,网格自身不再套第二层玻璃
+    /// (两层玻璃各自提亮一次会把卡片糊成毛玻璃)。
+    var appliesSurface: Bool = true
 
     private var rows: [[StatItem]] {
         stride(from: 0, to: cells.count, by: columns).map {
@@ -26,7 +32,16 @@ struct StatGrid: View {
         }
     }
 
+    @ViewBuilder
     var body: some View {
+        if appliesSurface {
+            grid.panelSurface(variant: variant)
+        } else {
+            grid
+        }
+    }
+
+    private var grid: some View {
         VStack(spacing: 0) {
             ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, row in
                 if rowIndex > 0 {
@@ -44,7 +59,6 @@ struct StatGrid: View {
                 }
             }
         }
-        .panelSurface()
     }
 }
 
