@@ -40,8 +40,13 @@ package: gen
 	rm -rf .dmg-stage && mkdir -p .dmg-stage
 	ditto $(BUILD_DIR)/Build/Products/Release/$(APP_NAME).app .dmg-stage/$(APP_NAME).app
 	ln -s /Applications .dmg-stage/Applications
-	# hdiutil create 在新 macOS 上已废弃,改用 diskutil image create from
-	diskutil image create from --format UDZO --volumeName $(APP_NAME) .dmg-stage $(DMG_NAME)
+	# hdiutil create 在新 macOS 上已废弃,改用 diskutil image create from;
+	# 旧系统(CI 的 macOS 26 runner 等)没有该子命令时回退 hdiutil。
+	@if diskutil image create from --help >/dev/null 2>&1; then \
+	  diskutil image create from --format UDZO --volumeName $(APP_NAME) .dmg-stage $(DMG_NAME); \
+	else \
+	  hdiutil create -volname $(APP_NAME) -srcfolder .dmg-stage -ov -format UDZO $(DMG_NAME); \
+	fi
 	rm -rf .dmg-stage
 	@echo "安装包已生成: $(CURDIR)/$(DMG_NAME) ($$(du -h $(DMG_NAME) | cut -f1))"
 

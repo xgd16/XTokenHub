@@ -1,80 +1,114 @@
 name: Release
 
-# 推送 v* 标签时自动构建全平台二进制并发布 GitHub Release
+# 发布 Release(草稿点「Publish release」)时自动打包并上传产物:
+#   - 服务端:全平台静态二进制 + 校验和
+#   - macOS:菜单栏 App 的 DMG
+# 也可以在 Actions 页手动「Run workflow」补打包一个已存在的 tag。
+#
+# 注意:触发方式已从「推 v* tag」改为「发布 Release」。只推 tag 不会打包;
+# 想要 tag 直接出包,可在 GitHub 上基于该 tag 发布一个 Release。
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要补打包的已存在 tag(如 v1.4.4)"
+        required: true
+        type: string
 
 permissions:
   contents: write
 
+# 同一 tag 不并发打包:手动补跑会排队,避免两边同时覆盖同名产物
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
 jobs:
-  release:
+  server:
+    name: 服务端二进制(全平台)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: true
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 9
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
 
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
+      - name: 安装前端依赖
         working-directory: frontend
+        run: pnpm install --frozen-lockfile
 
-      - name: Build frontend
-        run: make web
+      # dist 依赖 web 目标,会自动先构建前端产物(go:embed 进二进制)
+      - name: 构建前端 + 交叉编译六个平台
+        run: make dist VERSION="${RELEASE_TAG#v}"
 
-      - name: Cross compile all platforms
-        run: make dist VERSION=${GITHUB_REF_NAME#v}
-
-      - name: Generate checksums
+      - name: 生成校验和
         run: |
           cd dist
-          shasum -a 256 xtokenhub-* > checksums.txt
+          shasum -a 256 xtokenhub-*.tar.gz xtokenhub-*.zip > checksums.txt
+          cat checksums.txt
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: 上传到 Release
+        uses: softprops/action-gh-release@v3
         with:
-          name: XTokenHub ${{ github.ref_name }}
-          generate_release_notes: true
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             dist/xtokenhub-*.tar.gz
             dist/xtokenhub-*.zip
             dist/checksums.txt
+          fail_on_unmatched_files: true
 
-  # macOS 菜单栏伴侣应用：云端构建 dmg（macos-26 runner 自带 Xcode 26）
+  # macOS 菜单栏伴侣应用:云端构建 dmg(macos-26 runner 自带 Xcode 26)
   dmg:
+    name: macOS 菜单栏 DMG
     runs-on: macos-26
-    needs: release
+    timeout-minutes: 40
+    needs: server
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
-      - name: Install xcodegen
-        run: brew install xcodegen
+      - name: 安装 xcodegen
+        run: brew install --quiet xcodegen
 
-      - name: Build DMG
+      - name: 环境信息
+        run: |
+          sw_vers
+          xcodebuild -version
+
+      - name: 构建 DMG
         run: |
           cd XTokenHubMenuBar
-          make package DMG_NAME=XTokenHubMenuBar-${GITHUB_REF_NAME}-macos.dmg
+          make package DMG_NAME="XTokenHubMenuBar-${RELEASE_TAG}-macos.dmg"
 
-      - name: Upload DMG to Release
-        uses: softprops/action-gh-release@v2
+      - name: 上传到 Release
+        uses: softprops/action-gh-release@v3
         with:
-          name: XTokenHub ${{ github.ref_name }}
-          generate_release_notes: true
+          tag_name: ${{ env.RELEASE_TAG }}
           files: XTokenHubMenuBar/XTokenHubMenuBar-*-macos.dmg
+          fail_on_unmatched_files: true
